@@ -267,3 +267,140 @@ class VideoCutter:
         stdout, _ = await proc.communicate()
         parts = stdout.decode().strip().split(",")
         return int(parts[0]), int(parts[1])
+
+    async def _get_video_duration(self, path: Path) -> float:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        return float(stdout.decode().strip())
+
+    async def convert_to_vertical_with_footage(
+        self,
+        source: Path,
+        output_path: Path,
+        layout: str,
+        top_footage: Path | None = None,
+        bottom_footage: Path | None = None,
+        bg_footage: Path | None = None,
+    ) -> Path:
+        """Composite a streamer clip with footage filler in top/bottom/both/background mode.
+
+        Layout geometry on a 1080x1920 canvas:
+            top:        480px footage  + 1440px streamer
+            bottom:     1440px streamer + 480px footage
+            background: full 1080x1920 footage + 1080x810 streamer overlay at y=555
+            both:       320px footage + 1280px streamer + 320px footage
+        """
+        clip_dur = await self._get_video_duration(source)
+
+        # Build the input list and filter_complex per layout.
+        inputs: list[str] = ["-i", str(source)]
+        if layout == "top":
+            if top_footage is None:
+                raise ValueError("top_footage is required for layout='top'")
+            inputs += ["-stream_loop", "-1", "-i", str(top_footage)]
+            filter_complex = self._filter_top(clip_dur, top_h=480, mid_h=1440)
+        elif layout == "bottom":
+            if bottom_footage is None:
+                raise ValueError("bottom_footage is required for layout='bottom'")
+            inputs += ["-stream_loop", "-1", "-i", str(bottom_footage)]
+            filter_complex = self._filter_bottom(clip_dur, mid_h=1440, bot_h=480)
+        elif layout == "both":
+            if top_footage is None or bottom_footage is None:
+                raise ValueError("top_footage and bottom_footage are required for layout='both'")
+            inputs += [
+                "-stream_loop", "-1", "-i", str(top_footage),
+                "-stream_loop", "-1", "-i", str(bottom_footage),
+            ]
+            filter_complex = self._filter_both(clip_dur, top_h=320, mid_h=1280, bot_h=320)
+        elif layout == "background":
+            if bg_footage is None:
+                raise ValueError("bg_footage is required for layout='background'")
+            inputs += ["-stream_loop", "-1", "-i", str(bg_footage)]
+            filter_complex = self._filter_background(clip_dur, fg_h=810)
+        else:
+            raise ValueError(f"Unknown footage layout: {layout!r}")
+
+        cmd = [
+            "ffmpeg", "-y",
+            *inputs,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-shortest",
+            str(output_path),
+        ]
+
+        logger.info(f"Footage composite: layout={layout} dur={clip_dur:.1f}s")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"FFmpeg ошибка при сборке с футажем (layout={layout}): {stderr.decode()[-400:]}"
+            )
+
+        return output_path
+
+    @staticmethod
+    def _filter_top(clip_dur: float, top_h: int, mid_h: int) -> str:
+        # Streamer fills its slot via increase+crop — no black letterbox bars.
+        return (
+            f"[1:v]scale=1080:{top_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{top_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[topband];"
+            f"[0:v]scale=1080:{mid_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{mid_h}[mid];"
+            f"[topband][mid]vstack=inputs=2[out]"
+        )
+
+    @staticmethod
+    def _filter_bottom(clip_dur: float, mid_h: int, bot_h: int) -> str:
+        return (
+            f"[1:v]scale=1080:{bot_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{bot_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[botband];"
+            f"[0:v]scale=1080:{mid_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{mid_h}[mid];"
+            f"[mid][botband]vstack=inputs=2[out]"
+        )
+
+    @staticmethod
+    def _filter_both(clip_dur: float, top_h: int, mid_h: int, bot_h: int) -> str:
+        return (
+            f"[1:v]scale=1080:{top_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{top_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[topband];"
+            f"[2:v]scale=1080:{bot_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{bot_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[botband];"
+            f"[0:v]scale=1080:{mid_h}:force_original_aspect_ratio=increase,"
+            f"crop=1080:{mid_h}[mid];"
+            f"[topband][mid][botband]vstack=inputs=3[out]"
+        )
+
+    @staticmethod
+    def _filter_background(clip_dur: float, fg_h: int) -> str:
+        # Background mode: footage fills the canvas. Streamer is scaled to fit
+        # within fg_h height (aspect preserved, NO padding) and overlaid centered.
+        # The footage is naturally visible above and below the streamer, no black bars.
+        return (
+            f"[1:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,trim=duration={clip_dur},setpts=PTS-STARTPTS[bg];"
+            f"[0:v]scale=1080:{fg_h}:force_original_aspect_ratio=decrease[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
+        )

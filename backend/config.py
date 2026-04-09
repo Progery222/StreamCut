@@ -53,8 +53,18 @@ class Settings(BaseSettings):
     def cache_path(self) -> Path:
         return Path(self.storage_path) / "cache"
 
+    @property
+    def footage_library_path(self) -> Path:
+        return Path(self.storage_path) / "footage_library"
+
 
 settings = Settings()
 
-for p in [settings.downloads_path, settings.processed_path, settings.temp_path, settings.cache_path]:
+for p in [
+    settings.downloads_path,
+    settings.processed_path,
+    settings.temp_path,
+    settings.cache_path,
+    settings.footage_library_path,
+]:
     p.mkdir(parents=True, exist_ok=True)

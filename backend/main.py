@@ -68,6 +68,8 @@ async def create_job(request: CreateJobRequest, username: str = Depends(get_curr
                 "caption_style": request.caption_style,
                 "reframe_mode": request.reframe_mode,
                 "add_music": request.add_music,
+                "footage_layout": request.footage_layout,
+                "footage_category": request.footage_category,
                 "srt_timecodes": request.srt_timecodes,
                 "publish_targets": request.publish_targets,
                 "username": username,
@@ -102,6 +104,8 @@ async def create_batch(request: CreateBatchRequest, username: str = Depends(get_
         "caption_style": request.caption_style,
         "reframe_mode": request.reframe_mode,
         "add_music": request.add_music,
+        "footage_layout": request.footage_layout,
+        "footage_category": request.footage_category,
         "publish_targets": request.publish_targets,
         "username": username,
     }

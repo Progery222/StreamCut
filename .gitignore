@@ -2,3 +2,7 @@
 storage/
 __pycache__/
 *.pyc
+
+# ruflo
+.claude-flow/
+.claude/settings.json.bak

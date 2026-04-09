@@ -13,6 +13,8 @@ from services.analyzer import MomentAnalyzer
 from services.cutter import VideoCutter
 from services.caption_renderer import CaptionRenderer
 from services.reframer import SmartReframer
+from services.footage_library import FootageLibrary
+from utils.helpers import cleanup_old_files
 import redis as redis_lib
 
 logging.basicConfig(level=logging.INFO)
@@ -116,6 +118,21 @@ async def _process_video_async(job_id: str, url: str, options: dict):
     renderer = CaptionRenderer()
     reframe_mode = options.get("reframe_mode", "center")
     reframer = SmartReframer() if reframe_mode == "ai" else None
+
+    footage_layout = options.get("footage_layout", "none") or "none"
+    footage_category = options.get("footage_category")
+    footage_library: FootageLibrary | None = None
+    if footage_layout != "none":
+        footage_library = FootageLibrary(settings.footage_library_path).load()
+        if footage_library.is_empty():
+            raise RuntimeError(
+                f"footage_layout={footage_layout!r} requested, but footage library is empty. "
+                "Run `python -m scripts.prepare_footage --source-dir storage/adhd_cut` first."
+            )
+        logger.info(
+            f"[{job_id}] Footage library loaded: layout={footage_layout}, "
+            f"category={footage_category or '(any)'}"
+        )
 
     done_steps = []
 
@@ -249,7 +266,38 @@ async def _process_video_async(job_id: str, url: str, options: dict):
 
             vertical_path = settings.temp_path / f"{job_id}_vertical_{i}.mp4"
 
-            if reframer:
+            if footage_library is not None:
+                clip_dur = moment.end - moment.start
+                top_fp = (
+                    footage_library.pick(clip_dur, footage_category, seed=hash((job_id, i, "top")))
+                    if footage_layout in ("top", "both")
+                    else None
+                )
+                bot_fp = (
+                    footage_library.pick(clip_dur, footage_category, seed=hash((job_id, i, "bot")))
+                    if footage_layout in ("bottom", "both")
+                    else None
+                )
+                bg_fp = (
+                    footage_library.pick(clip_dur, footage_category, seed=hash((job_id, i, "bg")))
+                    if footage_layout == "background"
+                    else None
+                )
+                logger.info(
+                    f"[{job_id}] Clip {i+1}: footage layout={footage_layout!r} "
+                    f"top={top_fp.name if top_fp else None} "
+                    f"bot={bot_fp.name if bot_fp else None} "
+                    f"bg={bg_fp.name if bg_fp else None}"
+                )
+                await cutter.convert_to_vertical_with_footage(
+                    clip_path,
+                    vertical_path,
+                    layout=footage_layout,
+                    top_footage=top_fp,
+                    bottom_footage=bot_fp,
+                    bg_footage=bg_fp,
+                )
+            elif reframer:
                 clip_w, clip_h = await cutter._get_video_dimensions(clip_path)
                 if clip_h < clip_w:
                     loop = asyncio.get_event_loop()

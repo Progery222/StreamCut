@@ -24,6 +24,8 @@ class CreateJobRequest(BaseModel):
     caption_style: Optional[str] = "default"
     reframe_mode: Optional[str] = "center"
     add_music: Optional[str] = "none"  # none, upbeat, calm, motivation
+    footage_layout: Optional[str] = "none"  # none | top | bottom | both | background
+    footage_category: Optional[str] = None  # filter footage library by category/folder
     srt_timecodes: Optional[List[dict]] = None  # [{start, end, title?}]
     publish_targets: Optional[List[str]] = None
 
@@ -37,6 +39,8 @@ class CreateBatchRequest(BaseModel):
     caption_style: Optional[str] = "default"
     reframe_mode: Optional[str] = "center"
     add_music: Optional[str] = "none"
+    footage_layout: Optional[str] = "none"
+    footage_category: Optional[str] = None
     publish_targets: Optional[List[str]] = None
 
 
