@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StreamCUT — AI Video Shorts</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Auth modal -->
+  <div class="modal-overlay hidden" id="auth-modal">
+    <div class="modal-card">
+      <div class="modal-logo">S</div>
+      <h2 id="auth-modal-title">Вход в StreamCUT</h2>
+      <p class="modal-subtitle">Создавай шортсы из любого видео с AI</p>
+      <input type="text" id="auth-username" placeholder="Логин" autocomplete="username" />
+      <input type="password" id="auth-password" placeholder="Пароль" autocomplete="current-password" />
+      <button id="auth-submit-btn" class="btn-primary btn-full" onclick="authSubmit()">Войти</button>
+      <p class="auth-toggle">
+        <span id="auth-toggle-text">Нет аккаунта?</span>
+        <a href="#" onclick="toggleAuthMode(); return false" id="auth-toggle-link">Создать</a>
+      </p>
+      <p class="auth-error" id="auth-error"></p>
+    </div>
+  </div>
+
+  <!-- Ambient blobs -->
+  <div class="ambient">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+  </div>
+
+  <div class="app">
+
+    <!-- Navbar -->
+    <nav class="navbar">
+      <div class="nav-brand">
+        <div class="nav-logo">S</div>
+        <span class="nav-title">StreamCUT</span>
+      </div>
+      <div class="nav-right" id="user-info" style="display:none">
+        <span class="nav-user" id="user-name"></span>
+        <a href="#" onclick="logout(); return false" class="nav-logout">Выйти</a>
+      </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero" id="input-section">
+      <h1 class="hero-title">Превращай видео<br>в <span class="gradient-text">вирусные шортсы</span></h1>
+      <p class="hero-sub">AI сам находит лучшие моменты, добавляет субтитры и кадрирует</p>
+
+      <div class="input-card">
+        <div class="url-input-wrap" id="url-input-wrap">
+          <div class="input-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          </div>
+          <textarea
+            id="url-input"
+            rows="1"
+            placeholder="Вставь ссылки — одну или несколько (каждая с новой строки)"
+            autocomplete="off"
+          ></textarea>
+          <button id="submit-btn" class="btn-primary" onclick="handleSubmit()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <span id="submit-label">Создать</span>
+          </button>
+        </div>
+        <div class="url-count-bar" id="url-count-bar" style="display:none">
+          <span class="url-count-badge" id="url-count-badge"></span>
+          <span class="url-count-hint">Каждая ссылка обработается параллельно</span>
+        </div>
+
+        <!-- Settings -->
+        <div class="settings-toggle" onclick="toggleSettings()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Настройки</span>
+          <svg class="chevron" id="settings-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+
+        <div class="settings-panel" id="settings-panel" style="display:none">
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label>Язык</label>
+              <select id="language">
+                <option value="auto">Авто</option>
+                <option value="ru">Русский</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Шортсов (макс.)</label>
+              <select id="max-shorts">
+                <option value="1">1</option>
+                <option value="3">3</option>
+                <option value="5" selected>5</option>
+                <option value="7">7</option>
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="30">30</option>
+                <option value="50">50</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Субтитры</label>
+              <select id="caption-style">
+                <option value="karaoke">Караоке</option>
+                <option value="glow">Неон</option>
+                <option value="bold">Жирные</option>
+                <option value="default">Стандартные</option>
+                <option value="highlight">С подложкой</option>
+                <option value="minimal">Минимальные</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Кадрирование</label>
+              <select id="reframe-mode">
+                <option value="ai">AI-трекинг</option>
+                <option value="center">Центр</option>
+              </select>
+            </div>
+            <div class="setting-item">
+              <label>Музыка</label>
+              <select id="add-music">
+                <option value="auto">Авто (AI)</option>
+                <option value="upbeat">Энергичная</option>
+                <option value="calm">Спокойная</option>
+                <option value="motivation">Мотивация</option>
+                <option value="none">Без музыки</option>
+              </select>
+            </div>
+          </div>
+          <div class="settings-checks">
+            <label class="check-label">
+              <input type="file" id="srt-file" accept=".srt" style="display:none" onchange="handleSrtUpload(this)" />
+              <span class="checkmark" onclick="document.getElementById('srt-file').click()" style="cursor:pointer">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              </span>
+              <span id="srt-label" onclick="document.getElementById('srt-file').click()" style="cursor:pointer">Загрузить SRT таймкоды</span>
+            </label>
+          </div>
+          <div class="settings-publish">
+            <label class="check-label">
+              <input type="checkbox" id="publish-youtube" disabled />
+              <span class="checkmark"></span>
+              <span>YouTube</span>
+              <a href="#" id="connect-youtube" onclick="connectPlatform('youtube'); return false" class="link-sm">Подключить</a>
+            </label>
+            <label class="check-label">
+              <input type="checkbox" id="publish-tiktok" disabled />
+              <span class="checkmark"></span>
+              <span>TikTok</span>
+              <a href="#" id="connect-tiktok" onclick="connectPlatform('tiktok'); return false" class="link-sm">Подключить</a>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Video preview -->
+      <div class="video-preview" id="video-preview" style="display:none">
+        <img id="preview-thumb" src="" alt="" />
+        <div class="preview-info">
+          <div class="preview-title" id="preview-title"></div>
+          <div class="preview-meta" id="preview-meta"></div>
+        </div>
+        <button class="btn-download" id="btn-download-video" onclick="downloadVideo()" title="Скачать видео">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Скачать</span>
+        </button>
+      </div>
+
+      <p class="supported-text">YouTube, Rutube, VK Video, Rumble, Dailymotion и 1000+ сайтов</p>
+
+      <!-- History -->
+      <div class="history-section" id="history-section" style="display:none">
+        <div class="history-header" onclick="toggleHistory()">
+          <span>История обработок</span>
+          <svg class="chevron" id="history-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="history-list" id="history-list" style="display:none"></div>
+      </div>
+    </section>
+
+    <!-- Progress (single) -->
+    <section class="glass-card" id="progress-section" style="display:none">
+      <div class="progress-top">
+        <span class="progress-label" id="progress-status">Обработка...</span>
+        <span class="progress-pct" id="progress-percent">0%</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-bar" id="progress-fill"></div>
+      </div>
+      <div class="steps-list" id="steps-list"></div>
+    </section>
+
+    <!-- Progress (batch) -->
+    <section class="glass-card" id="batch-progress-section" style="display:none">
+      <div class="progress-top">
+        <span class="progress-label" id="batch-progress-status">Пакетная обработка...</span>
+        <span class="progress-pct" id="batch-progress-percent">0%</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-bar" id="batch-progress-fill"></div>
+      </div>
+      <div class="batch-jobs-list" id="batch-jobs-list"></div>
+    </section>
+
+    <!-- Results -->
+    <section id="results-section" style="display:none">
+      <h2 class="results-heading" id="results-title"></h2>
+      <div class="shorts-grid" id="shorts-grid"></div>
+    </section>
+
+    <!-- Error -->
+    <section class="glass-card error-card" id="error-section" style="display:none">
+      <div class="error-icon">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+      </div>
+      <p id="error-message"></p>
+      <button class="btn-secondary" onclick="resetUI()">Попробовать снова</button>
+    </section>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+[project]
+name = "streamcut"
+version = "0.1.0"
+description = "StreamCUT — VideoShorts AI"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    "backend/__pycache__",
+    "backend/**/__pycache__",
+    "storage",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function calls in defaults (FastAPI Depends pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "F401"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["backend"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

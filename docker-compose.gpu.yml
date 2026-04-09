@@ -1,0 +1,23 @@
+services:
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    env_file: .env
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    volumes:
+      - ./storage:/app/storage
+      - ./backend:/app
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    command: celery -A worker worker --beat --loglevel=info --concurrency=2
