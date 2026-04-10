@@ -32,3 +32,7 @@ COPY . .
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
 RUN mkdir -p /app/storage/downloads /app/storage/processed /app/storage/temp
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
