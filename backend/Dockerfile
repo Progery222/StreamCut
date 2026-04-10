@@ -8,15 +8,23 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Cache bust: change this value to force pip reinstall
-ARG PIP_CACHE_BUST=2
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir "openai>=1.60.0" "httpx>=0.28.0" \
-    && python -c "import ultralytics; print('ultralytics OK')" \
-    && python -c "import boto3; print('boto3 OK')"
+    && pip install --no-cache-dir \
+        "openai>=1.60.0" \
+        "httpx>=0.28.0" \
+        "ultralytics>=8.3.0" \
+        "mediapipe==0.10.14" \
+        "python-jose[cryptography]==3.3.0" \
+        "passlib[bcrypt]==1.7.4" \
+        "bcrypt==4.1.3" \
+        "google-api-python-client==2.131.0" \
+        "google-auth-oauthlib==1.2.0" \
+        "google-auth-httplib2==0.2.0" \
+        "cryptography==42.0.8" \
+        "google-genai>=1.0.0" \
+        "boto3>=1.34.0"
 
 COPY . .
 
