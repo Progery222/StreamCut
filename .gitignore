@@ -2,6 +2,7 @@
 storage/
 __pycache__/
 *.pyc
+celerybeat-schedule
 
 # ruflo
 .claude-flow/

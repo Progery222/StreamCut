@@ -319,7 +319,8 @@ async function startBatchProcessing(urls) {
         reframe_mode: document.getElementById("reframe-mode").value,
         add_music: document.getElementById("add-music").value,
         footage_layout: document.getElementById("footage-layout").value,
-        footage_category: document.getElementById("footage-category").value.trim() || null,
+        footage_category: document.getElementById("footage-category").value || null,
+        caption_position: document.getElementById("caption-position").value,
         publish_targets: getPublishTargets(),
         min_duration: 15,
         max_duration: 60,
@@ -483,7 +484,8 @@ async function startProcessing() {
         reframe_mode: document.getElementById("reframe-mode").value,
         add_music: document.getElementById("add-music").value,
         footage_layout: document.getElementById("footage-layout").value,
-        footage_category: document.getElementById("footage-category").value.trim() || null,
+        footage_category: document.getElementById("footage-category").value || null,
+        caption_position: document.getElementById("caption-position").value,
         srt_timecodes: srtTimecodes,
         publish_targets: getPublishTargets(),
         min_duration: 15,
@@ -709,9 +711,27 @@ function escapeHtml(text) {
 
 // === Init ===
 
+async function loadFootageCategories() {
+  try {
+    const resp = await fetch(`${API_BASE}/footage/categories`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const select = document.getElementById("footage-category");
+    for (const cat of data.categories || []) {
+      const opt = document.createElement("option");
+      opt.value = cat;
+      opt.textContent = cat;
+      select.appendChild(opt);
+    }
+  } catch (err) {
+    console.warn("Failed to load footage categories:", err);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   checkAuth();
   setupPreview();
+  loadFootageCategories();
   const urlInput = document.getElementById("url-input");
   urlInput.addEventListener("input", autoResizeInput);
   urlInput.addEventListener("paste", () => setTimeout(autoResizeInput, 50));

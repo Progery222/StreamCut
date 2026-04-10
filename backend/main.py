@@ -1,17 +1,18 @@
-import uuid
 import json
 import logging
-from fastapi import FastAPI, HTTPException
+import uuid
+
+import redis as redis_lib
+from auth import get_current_user
+from config import settings
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi import Depends
-from models.schemas import CreateJobRequest, CreateBatchRequest, JobResponse, BatchResponse, JobStatus
-from config import settings
-from worker import celery_app, update_job_state
-from auth import get_current_user
+from models.schemas import BatchResponse, CreateBatchRequest, CreateJobRequest, JobResponse, JobStatus
 from routers.auth import router as auth_router
 from routers.oauth import router as oauth_router
-import redis as redis_lib
+from services.footage_library import FootageLibrary
+from worker import celery_app, update_job_state
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,6 +47,13 @@ async def health():
     return {"status": "ok", "version": "1.0.0"}
 
 
+@app.get("/footage/categories")
+async def footage_categories():
+    """Return the list of available footage categories from the prepared library."""
+    lib = FootageLibrary(settings.footage_library_path).load()
+    return {"categories": lib.list_categories()}
+
+
 @app.post("/jobs", response_model=JobResponse)
 async def create_job(request: CreateJobRequest, username: str = Depends(get_current_user)):
     job_id = str(uuid.uuid4())
@@ -70,6 +78,7 @@ async def create_job(request: CreateJobRequest, username: str = Depends(get_curr
                 "add_music": request.add_music,
                 "footage_layout": request.footage_layout,
                 "footage_category": request.footage_category,
+                "caption_position": request.caption_position,
                 "srt_timecodes": request.srt_timecodes,
                 "publish_targets": request.publish_targets,
                 "username": username,
@@ -106,6 +115,7 @@ async def create_batch(request: CreateBatchRequest, username: str = Depends(get_
         "add_music": request.add_music,
         "footage_layout": request.footage_layout,
         "footage_category": request.footage_category,
+        "caption_position": request.caption_position,
         "publish_targets": request.publish_targets,
         "username": username,
     }
@@ -126,12 +136,14 @@ async def create_batch(request: CreateBatchRequest, username: str = Depends(get_
             task_id=job_id,
         )
 
-        jobs.append(JobResponse(
-            job_id=job_id,
-            status=JobStatus.PENDING,
-            message=f"В очереди: {url[:60]}",
-            progress=0,
-        ))
+        jobs.append(
+            JobResponse(
+                job_id=job_id,
+                status=JobStatus.PENDING,
+                message=f"В очереди: {url[:60]}",
+                progress=0,
+            )
+        )
 
     redis_client.setex(f"batch:{batch_id}:owner", 86400, username)
     logger.info(f"Batch {batch_id}: {len(jobs)} задач от {username}")
@@ -156,15 +168,17 @@ async def get_batch(batch_id: str, username: str = Depends(get_current_user)):
         if not raw:
             continue
         data = json.loads(raw)
-        jobs.append(JobResponse(
-            job_id=job_id,
-            status=JobStatus(data.get("status", "pending")),
-            message=data.get("message", ""),
-            progress=data.get("progress", 0),
-            steps=data.get("steps"),
-            shorts=data.get("shorts"),
-            error=data.get("error"),
-        ))
+        jobs.append(
+            JobResponse(
+                job_id=job_id,
+                status=JobStatus(data.get("status", "pending")),
+                message=data.get("message", ""),
+                progress=data.get("progress", 0),
+                steps=data.get("steps"),
+                shorts=data.get("shorts"),
+                error=data.get("error"),
+            )
+        )
 
     done = sum(1 for j in jobs if j.status in (JobStatus.DONE, JobStatus.ERROR))
     total = len(jobs)
@@ -180,15 +194,17 @@ async def list_jobs(username: str = Depends(get_current_user)):
             raw = redis_client.get(f"job:{job_id}:state")
             if raw:
                 data = json.loads(raw)
-                jobs.append(JobResponse(
-                    job_id=job_id,
-                    status=JobStatus(data.get("status", "pending")),
-                    message=data.get("message", ""),
-                    progress=data.get("progress", 0),
-                    steps=data.get("steps"),
-                    shorts=data.get("shorts"),
-                    error=data.get("error"),
-                ))
+                jobs.append(
+                    JobResponse(
+                        job_id=job_id,
+                        status=JobStatus(data.get("status", "pending")),
+                        message=data.get("message", ""),
+                        progress=data.get("progress", 0),
+                        steps=data.get("steps"),
+                        shorts=data.get("shorts"),
+                        error=data.get("error"),
+                    )
+                )
     return jobs
 
 
@@ -225,8 +241,9 @@ async def download_zip(job_id: str, username: str = Depends(get_current_user)):
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="Файлы не найдены")
 
-    import zipfile
     import io
+    import zipfile
+
     from fastapi.responses import StreamingResponse
 
     buffer = io.BytesIO()
@@ -252,6 +269,7 @@ async def delete_job(job_id: str, username: str = Depends(get_current_user)):
     job_dir = settings.processed_path / job_id
     if job_dir.exists():
         import shutil
+
         shutil.rmtree(job_dir)
 
     redis_client.delete(f"job:{job_id}:state")
@@ -262,9 +280,10 @@ async def delete_job(job_id: str, username: str = Depends(get_current_user)):
 @app.get("/download-video")
 async def download_video(url: str):
     """Скачивает видео через yt-dlp и отдаёт файл пользователю."""
-    from services.downloader import VideoDownloader
-    from fastapi.responses import FileResponse
     import hashlib
+
+    from fastapi.responses import FileResponse
+    from services.downloader import VideoDownloader
 
     downloader = VideoDownloader(settings.temp_path)
     file_id = hashlib.md5(url.encode()).hexdigest()[:12]
@@ -290,6 +309,7 @@ async def download_video(url: str):
 @app.get("/video-info")
 async def get_video_info(url: str):
     from services.downloader import VideoDownloader
+
     downloader = VideoDownloader(settings.downloads_path)
     try:
         info = await downloader.get_video_info(url)

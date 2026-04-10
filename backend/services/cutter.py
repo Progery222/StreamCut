@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 
@@ -23,16 +22,26 @@ class VideoCutter:
         duration = end - start
 
         cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(start),
-            "-i", str(source),
-            "-t", str(duration),
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-avoid_negative_ts", "make_zero",
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(start),
+            "-i",
+            str(source),
+            "-t",
+            str(duration),
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-avoid_negative_ts",
+            "make_zero",
             str(output_path),
         ]
 
@@ -64,14 +73,22 @@ class VideoCutter:
             vf = f"crop={target_w}:{height}:{x_offset}:0,scale=1080:1920"
 
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(source),
-            "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            vf,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             str(output_path),
         ]
 
@@ -102,16 +119,26 @@ class VideoCutter:
         )
 
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(source),
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             str(output_path),
         ]
 
@@ -135,14 +162,22 @@ class VideoCutter:
         crop_filter: str,
     ) -> Path:
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(source),
-            "-vf", crop_filter,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-vf",
+            crop_filter,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             str(output_path),
         ]
 
@@ -162,14 +197,14 @@ class VideoCutter:
         self,
         source: Path,
         output_path: Path,
-        face_box: Tuple[int, int, int, int],
+        face_box: tuple[int, int, int, int],
         src_w: int,
         src_h: int,
     ) -> Path:
         """Split-screen: контент сверху (60%), лицо снизу (40%) — как в Klap.
         Оба региона кропятся в 9:16 и масштабируются без искажений."""
-        top_h = 1152   # 60% от 1920
-        bot_h = 768    # 40% от 1920
+        top_h = 1152  # 60% от 1920
+        bot_h = 768  # 40% от 1920
 
         # === Верхняя часть: контент по центру ===
         # Кропим 9:16 область из центра видео
@@ -225,16 +260,26 @@ class VideoCutter:
         )
 
         cmd = [
-            "ffmpeg", "-y",
-            "-i", str(source),
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             str(output_path),
         ]
 
@@ -251,12 +296,17 @@ class VideoCutter:
 
         return output_path
 
-    async def _get_video_dimensions(self, path: Path) -> Tuple[int, int]:
+    async def _get_video_dimensions(self, path: Path) -> tuple[int, int]:
         cmd = [
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "csv=p=0",
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
             str(path),
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -270,9 +320,13 @@ class VideoCutter:
 
     async def _get_video_duration(self, path: Path) -> float:
         cmd = [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             str(path),
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -288,64 +342,60 @@ class VideoCutter:
         source: Path,
         output_path: Path,
         layout: str,
-        top_footage: Path | None = None,
-        bottom_footage: Path | None = None,
-        bg_footage: Path | None = None,
+        footage: Path,
     ) -> Path:
-        """Composite a streamer clip with footage filler in top/bottom/both/background mode.
+        """Composite a streamer clip with a single footage clip in one of three strict layouts.
 
-        Layout geometry on a 1080x1920 canvas:
-            top:        480px footage  + 1440px streamer
-            bottom:     1440px streamer + 480px footage
-            background: full 1080x1920 footage + 1080x810 streamer overlay at y=555
-            both:       320px footage + 1280px streamer + 320px footage
+        Canvas is always 1080x1920. Streamer and footage both fill their slots via
+        increase+crop — no letterbox, no padding.
+
+        Layouts:
+            background:     full-screen footage + 1080x640 streamer overlaid at y=640
+                            (streamer occupies exactly 1/3 of the canvas height)
+            footage_top:    1080x960 footage on top + 1080x960 streamer on bottom (50/50)
+            footage_bottom: 1080x960 streamer on top + 1080x960 footage on bottom (50/50)
         """
         clip_dur = await self._get_video_duration(source)
 
-        # Build the input list and filter_complex per layout.
-        inputs: list[str] = ["-i", str(source)]
-        if layout == "top":
-            if top_footage is None:
-                raise ValueError("top_footage is required for layout='top'")
-            inputs += ["-stream_loop", "-1", "-i", str(top_footage)]
-            filter_complex = self._filter_top(clip_dur, top_h=480, mid_h=1440)
-        elif layout == "bottom":
-            if bottom_footage is None:
-                raise ValueError("bottom_footage is required for layout='bottom'")
-            inputs += ["-stream_loop", "-1", "-i", str(bottom_footage)]
-            filter_complex = self._filter_bottom(clip_dur, mid_h=1440, bot_h=480)
-        elif layout == "both":
-            if top_footage is None or bottom_footage is None:
-                raise ValueError("top_footage and bottom_footage are required for layout='both'")
-            inputs += [
-                "-stream_loop", "-1", "-i", str(top_footage),
-                "-stream_loop", "-1", "-i", str(bottom_footage),
-            ]
-            filter_complex = self._filter_both(clip_dur, top_h=320, mid_h=1280, bot_h=320)
-        elif layout == "background":
-            if bg_footage is None:
-                raise ValueError("bg_footage is required for layout='background'")
-            inputs += ["-stream_loop", "-1", "-i", str(bg_footage)]
-            filter_complex = self._filter_background(clip_dur, fg_h=810)
+        if layout == "background":
+            filter_complex = self._filter_background_third(clip_dur)
+        elif layout == "footage_top":
+            filter_complex = self._filter_footage_top_half(clip_dur)
+        elif layout == "footage_bottom":
+            filter_complex = self._filter_footage_bottom_half(clip_dur)
         else:
             raise ValueError(f"Unknown footage layout: {layout!r}")
 
         cmd = [
-            "ffmpeg", "-y",
-            *inputs,
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-map", "0:a?",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(footage),
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[out]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
             "-shortest",
             str(output_path),
         ]
 
-        logger.info(f"Footage composite: layout={layout} dur={clip_dur:.1f}s")
+        logger.info(f"Footage composite: layout={layout} dur={clip_dur:.1f}s footage={footage.name}")
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -354,53 +404,39 @@ class VideoCutter:
         _, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"FFmpeg ошибка при сборке с футажем (layout={layout}): {stderr.decode()[-400:]}"
-            )
+            raise RuntimeError(f"FFmpeg ошибка при сборке с футажем (layout={layout}): {stderr.decode()[-400:]}")
 
         return output_path
 
     @staticmethod
-    def _filter_top(clip_dur: float, top_h: int, mid_h: int) -> str:
-        # Streamer fills its slot via increase+crop — no black letterbox bars.
+    def _filter_footage_top_half(clip_dur: float) -> str:
+        """50/50 split: footage on top (1080x960), streamer on bottom (1080x960)."""
         return (
-            f"[1:v]scale=1080:{top_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{top_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[topband];"
-            f"[0:v]scale=1080:{mid_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{mid_h}[mid];"
+            f"[1:v]scale=1080:960:force_original_aspect_ratio=increase,"
+            f"crop=1080:960,trim=duration={clip_dur},setpts=PTS-STARTPTS[topband];"
+            f"[0:v]scale=1080:960:force_original_aspect_ratio=increase,"
+            f"crop=1080:960[mid];"
             f"[topband][mid]vstack=inputs=2[out]"
         )
 
     @staticmethod
-    def _filter_bottom(clip_dur: float, mid_h: int, bot_h: int) -> str:
+    def _filter_footage_bottom_half(clip_dur: float) -> str:
+        """50/50 split: streamer on top (1080x960), footage on bottom (1080x960)."""
         return (
-            f"[1:v]scale=1080:{bot_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{bot_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[botband];"
-            f"[0:v]scale=1080:{mid_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{mid_h}[mid];"
+            f"[1:v]scale=1080:960:force_original_aspect_ratio=increase,"
+            f"crop=1080:960,trim=duration={clip_dur},setpts=PTS-STARTPTS[botband];"
+            f"[0:v]scale=1080:960:force_original_aspect_ratio=increase,"
+            f"crop=1080:960[mid];"
             f"[mid][botband]vstack=inputs=2[out]"
         )
 
     @staticmethod
-    def _filter_both(clip_dur: float, top_h: int, mid_h: int, bot_h: int) -> str:
-        return (
-            f"[1:v]scale=1080:{top_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{top_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[topband];"
-            f"[2:v]scale=1080:{bot_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{bot_h},trim=duration={clip_dur},setpts=PTS-STARTPTS[botband];"
-            f"[0:v]scale=1080:{mid_h}:force_original_aspect_ratio=increase,"
-            f"crop=1080:{mid_h}[mid];"
-            f"[topband][mid][botband]vstack=inputs=3[out]"
-        )
-
-    @staticmethod
-    def _filter_background(clip_dur: float, fg_h: int) -> str:
-        # Background mode: footage fills the canvas. Streamer is scaled to fit
-        # within fg_h height (aspect preserved, NO padding) and overlaid centered.
-        # The footage is naturally visible above and below the streamer, no black bars.
+    def _filter_background_third(clip_dur: float) -> str:
+        """Full-screen footage with streamer overlaid as 1080x640 (1/3 height) at y=640."""
         return (
             f"[1:v]scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,trim=duration={clip_dur},setpts=PTS-STARTPTS[bg];"
-            f"[0:v]scale=1080:{fg_h}:force_original_aspect_ratio=decrease[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2[out]"
+            f"[0:v]scale=1080:640:force_original_aspect_ratio=increase,"
+            f"crop=1080:640[fg];"
+            f"[bg][fg]overlay=0:640[out]"
         )
