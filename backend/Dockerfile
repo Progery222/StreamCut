@@ -8,7 +8,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.txt backend/requirements.txt* ./
+# When built from repo root, prefer backend/requirements.txt
+RUN if [ -f backend/requirements.txt ]; then cp backend/requirements.txt requirements.txt; fi
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir \
@@ -27,6 +29,9 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
         "boto3>=1.34.0"
 
 COPY . .
+
+# When Railway builds with repo root as context, main.py ends up in backend/
+RUN if [ -f backend/main.py ]; then cp -r backend/* . ; fi
 
 # Download YOLO model during build
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
