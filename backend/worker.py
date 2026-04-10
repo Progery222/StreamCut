@@ -56,6 +56,11 @@ def cleanup_files():
         job_id = key.decode().split(":")[1]
         job_dir = settings.processed_path / job_id
         if not job_dir.exists():
+            # Also clean up MinIO processed files for orphaned jobs
+            from services.storage import storage
+
+            if storage.enabled:
+                storage.delete_prefix(f"processed/{job_id}/")
             _redis.delete(key)
             _redis.delete(f"job:{job_id}:owner")
 
@@ -177,13 +182,25 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         language = options.get("language", "auto")
         cache_key = hashlib.md5(f"{url}:{language}".encode()).hexdigest()
         cache_file = settings.cache_path / f"{cache_key}.json"
+        cache_s3_key = f"cache/{cache_key}.json"
+
+        from services.storage import storage
 
         segments = None
+        # Try local cache first, then MinIO
+        cached_data = None
         if cache_file.exists():
+            cached_data = cache_file.read_text(encoding="utf-8")
+        elif storage.enabled:
+            raw = storage.download_bytes(cache_s3_key)
+            if raw:
+                cached_data = raw.decode("utf-8")
+
+        if cached_data:
             try:
                 from models.schemas import TranscriptSegment
 
-                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                cached = json.loads(cached_data)
                 segments = [TranscriptSegment(**s) for s in cached]
                 logger.info(f"[{job_id}] Транскрипция из кэша: {len(segments)} сегментов")
                 update_job_state(
@@ -209,10 +226,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             segments = await transcriber.transcribe(video_path, language)
 
             try:
-                cache_file.write_text(
-                    json.dumps([s.model_dump() for s in segments], ensure_ascii=False),
-                    encoding="utf-8",
-                )
+                cache_json = json.dumps([s.model_dump() for s in segments], ensure_ascii=False)
+                cache_file.write_text(cache_json, encoding="utf-8")
+                if storage.enabled:
+                    storage.upload_bytes(cache_json.encode("utf-8"), cache_s3_key)
                 logger.info(f"[{job_id}] Транскрипция сохранена в кэш")
             except Exception as e:
                 logger.warning(f"[{job_id}] Не удалось сохранить кэш: {e}")
@@ -373,11 +390,8 @@ async def _process_video_async(job_id: str, url: str, options: dict):
 
             file_size = final_path.stat().st_size if final_path.exists() else 0
 
-            # Upload to R2 if configured
-            from services.storage import storage
-
-            storage_key = f"{job_id}/{output_filename}"
-            video_url = storage.upload(final_path, storage_key) if storage.use_r2 else f"/storage/{storage_key}"
+            storage_key = f"processed/{job_id}/{output_filename}"
+            video_url = storage.upload(final_path, storage_key) if storage.enabled else f"/storage/{job_id}/{output_filename}"
 
             return {
                 "index": i + 1,

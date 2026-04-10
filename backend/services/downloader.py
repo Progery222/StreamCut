@@ -45,18 +45,30 @@ class VideoDownloader:
         loop = asyncio.get_event_loop()
 
         def _download():
-            # Проверяем кеш по хешу URL — если видео уже скачано
+            from services.storage import storage
+
             url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+
+            # 1) Check local cache
             for ext in ["mp4", "mkv", "webm", "avi"]:
                 cached = self.output_dir / f"{url_hash}.{ext}"
                 if cached.exists() and cached.stat().st_size > 0:
-                    # Копируем/линкуем под текущий job_id
                     target = self.output_dir / f"{job_id}.{ext}"
                     import shutil
                     shutil.copy2(cached, target)
-                    logger.info(f"Видео из кеша: {cached} -> {target}")
+                    logger.info(f"Video from local cache: {cached}")
                     return target
 
+            # 2) Check MinIO cache
+            if storage.enabled:
+                for ext in ["mp4", "mkv", "webm"]:
+                    s3_key = f"downloads/{url_hash}.{ext}"
+                    target = self.output_dir / f"{job_id}.{ext}"
+                    if storage.download(s3_key, target):
+                        logger.info(f"Video from MinIO cache: {s3_key}")
+                        return target
+
+            # 3) Download fresh
             ydl_opts = self._get_ydl_opts(job_id, progress_callback)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -76,12 +88,18 @@ class VideoDownloader:
                 for ext in ["mp4", "mkv", "webm", "avi"]:
                     path = self.output_dir / f"{job_id}.{ext}"
                     if path.exists():
-                        # Сохраняем кеш-копию по url_hash
+                        # Save to local cache
                         import shutil
                         cache_path = self.output_dir / f"{url_hash}.{ext}"
                         if not cache_path.exists():
                             shutil.copy2(path, cache_path)
-                        logger.info(f"Видео скачано: {path}")
+                        # Upload to MinIO cache
+                        if storage.enabled:
+                            try:
+                                storage.upload(path, f"downloads/{url_hash}.{ext}")
+                            except Exception as e:
+                                logger.warning(f"MinIO cache upload failed: {e}")
+                        logger.info(f"Video downloaded: {path}")
                         return path
 
                 raise FileNotFoundError("Скачанный файл не найден")

@@ -52,6 +52,18 @@ cd frontend && python -m http.server 3000
 - `GET /video-info?url=...` — инфо о видео
 - `GET /health` — проверка
 
+## Storage
+
+По умолчанию файлы хранятся локально в `storage/`. При настройке MinIO (`MINIO_URL`) переключается на S3-совместимое хранилище:
+
+- `processed/` → MinIO `streamcut/processed/{job_id}/` (готовые шортсы)
+- `downloads/` → MinIO `streamcut/downloads/{url_hash}.mp4` (кеш скачанных видео)
+- `cache/` → MinIO `streamcut/cache/{hash}.json` (кеш транскрипций)
+- `footage_library/` → MinIO `streamcut/footage_library/` (B-roll чанки, скачиваются и кешируются локально)
+- `temp/` → всегда локально (рабочие файлы FFmpeg)
+
+`StorageService` (`services/storage.py`) — единый абстрактный слой. Приоритет: MINIO_URL > R2 vars > local fallback.
+
 ## Переменные окружения
 См. `.env.example`
 

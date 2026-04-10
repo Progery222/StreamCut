@@ -54,6 +54,19 @@ async def footage_categories():
     return {"categories": lib.list_categories()}
 
 
+@app.get("/jobs/active-count")
+async def active_jobs_count():
+    """Public endpoint for dashboard health monitoring (no auth required)."""
+    count = 0
+    for key in redis_client.scan_iter("job:*:state"):
+        raw = redis_client.get(key)
+        if raw:
+            data = json.loads(raw)
+            if data.get("status") not in ("done", "error"):
+                count += 1
+    return {"count": count}
+
+
 @app.post("/jobs", response_model=JobResponse)
 async def create_job(request: CreateJobRequest, username: str = Depends(get_current_user)):
     job_id = str(uuid.uuid4())
@@ -237,22 +250,41 @@ async def download_zip(job_id: str, username: str = Depends(get_current_user)):
     if owner and owner.decode() != username:
         raise HTTPException(status_code=403, detail="Нет доступа")
 
-    job_dir = settings.processed_path / job_id
-    if not job_dir.exists():
-        raise HTTPException(status_code=404, detail="Файлы не найдены")
-
     import io
     import zipfile
 
     from fastapi.responses import StreamingResponse
+    from services.storage import storage
 
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in job_dir.iterdir():
-            if f.is_file() and f.suffix == ".mp4":
-                zf.write(f, f.name)
-    buffer.seek(0)
+    found = False
 
+    # Try local files first
+    job_dir = settings.processed_path / job_id
+    if job_dir.exists():
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in job_dir.iterdir():
+                if f.is_file() and f.suffix == ".mp4":
+                    zf.write(f, f.name)
+                    found = True
+
+    # Fall back to MinIO
+    if not found and storage.enabled:
+        keys = storage.list_keys(f"processed/{job_id}/")
+        mp4_keys = [k for k in keys if k.endswith(".mp4")]
+        if mp4_keys:
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for key in mp4_keys:
+                    data = storage.download_bytes(key)
+                    if data:
+                        filename = key.rsplit("/", 1)[-1]
+                        zf.writestr(filename, data)
+                        found = True
+
+    if not found:
+        raise HTTPException(status_code=404, detail="Файлы не найдены")
+
+    buffer.seek(0)
     return StreamingResponse(
         buffer,
         media_type="application/zip",
@@ -266,11 +298,18 @@ async def delete_job(job_id: str, username: str = Depends(get_current_user)):
     if owner and owner.decode() != username:
         raise HTTPException(status_code=403, detail="Нет доступа")
 
+    # Delete local files
     job_dir = settings.processed_path / job_id
     if job_dir.exists():
         import shutil
 
         shutil.rmtree(job_dir)
+
+    # Delete from MinIO
+    from services.storage import storage
+
+    if storage.enabled:
+        storage.delete_prefix(f"processed/{job_id}/")
 
     redis_client.delete(f"job:{job_id}:state")
     redis_client.delete(f"job:{job_id}:owner")

@@ -52,6 +52,17 @@ class FootageLibrary:
         import json  # local import keeps cold-start footprint tiny
 
         manifest_path = self.root / MANIFEST_FILENAME
+
+        # Try local manifest first, fall back to MinIO
+        if not manifest_path.exists():
+            from services.storage import storage
+
+            if storage.enabled:
+                s3_key = f"footage_library/{MANIFEST_FILENAME}"
+                self.root.mkdir(parents=True, exist_ok=True)
+                if storage.download(s3_key, manifest_path):
+                    logger.info(f"Loaded footage manifest from MinIO: {s3_key}")
+
         if not manifest_path.exists():
             self._data = {"version": LIBRARY_VERSION, "categories": {}}
             self._loaded = True
@@ -182,7 +193,7 @@ class FootageLibrary:
                     f"Footage pick: category={cat_name} bucket={bucket}s "
                     f"path={picked_path} (session={session_id[:8]}…, fresh={len(fresh)}/{len(candidates)})"
                 )
-                return self.root / picked_path
+                return self._ensure_local(picked_path)
 
         # Every bucket in the preferred range is exhausted — recycle.
         logger.warning(
@@ -191,4 +202,23 @@ class FootageLibrary:
         )
         candidates = self._chunks_in_bucket(cat_name, start_bucket) or self._chunks_in_bucket(cat_name, bucket_keys[-1])
         picked = rng.choice(candidates)
-        return self.root / picked["path"]
+        return self._ensure_local(picked["path"])
+
+    def _ensure_local(self, relative_path: str) -> Path:
+        """Return a local Path for the chunk, downloading from MinIO if needed."""
+        local = self.root / relative_path
+        if local.exists():
+            return local
+
+        from services.storage import storage
+
+        if storage.enabled:
+            s3_key = f"footage_library/{relative_path}"
+            local.parent.mkdir(parents=True, exist_ok=True)
+            if storage.download(s3_key, local):
+                logger.info(f"Footage chunk fetched from MinIO: {s3_key}")
+                return local
+
+        raise FileNotFoundError(
+            f"Footage chunk not found locally or in MinIO: {relative_path}"
+        )

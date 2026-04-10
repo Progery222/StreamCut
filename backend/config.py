@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     r2_secret_access_key: str = ""
     r2_bucket: str = ""
     r2_public_url: str = ""
+    # MinIO / S3-compatible storage (preferred over R2)
+    minio_url: str = ""
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "streamcut"
+    minio_public_url: str = ""
 
     class Config:
         env_file = ".env"
