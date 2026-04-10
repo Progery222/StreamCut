@@ -2,3 +2,8 @@
 storage/
 __pycache__/
 *.pyc
+celerybeat-schedule
+
+# ruflo
+.claude-flow/
+.claude/settings.json.bak

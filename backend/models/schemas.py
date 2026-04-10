@@ -1,6 +1,10 @@
-from pydantic import BaseModel
-from typing import Optional, List
 from enum import Enum
+from typing import Literal
+
+from pydantic import BaseModel
+
+FootageLayout = Literal["none", "background", "footage_top", "footage_bottom"]
+CaptionPosition = Literal["auto", "fixed_bottom"]
 
 
 class JobStatus(str, Enum):
@@ -17,32 +21,38 @@ class JobStatus(str, Enum):
 
 class CreateJobRequest(BaseModel):
     url: str
-    language: Optional[str] = "auto"
-    max_shorts: Optional[int] = 5
-    min_duration: Optional[int] = 15
-    max_duration: Optional[int] = 60
-    caption_style: Optional[str] = "default"
-    reframe_mode: Optional[str] = "center"
-    add_music: Optional[str] = "none"  # none, upbeat, calm, motivation
-    srt_timecodes: Optional[List[dict]] = None  # [{start, end, title?}]
-    publish_targets: Optional[List[str]] = None
+    language: str | None = "auto"
+    max_shorts: int | None = 5
+    min_duration: int | None = 15
+    max_duration: int | None = 60
+    caption_style: str | None = "default"
+    reframe_mode: str | None = "center"
+    add_music: str | None = "none"  # none, upbeat, calm, motivation
+    footage_layout: FootageLayout = "none"
+    footage_category: str | None = None  # filter footage library by category
+    caption_position: CaptionPosition = "auto"  # auto → follows layout; fixed_bottom → always y≈1420
+    srt_timecodes: list[dict] | None = None  # [{start, end, title?}]
+    publish_targets: list[str] | None = None
 
 
 class CreateBatchRequest(BaseModel):
-    urls: List[str]
-    language: Optional[str] = "auto"
-    max_shorts: Optional[int] = 5
-    min_duration: Optional[int] = 15
-    max_duration: Optional[int] = 60
-    caption_style: Optional[str] = "default"
-    reframe_mode: Optional[str] = "center"
-    add_music: Optional[str] = "none"
-    publish_targets: Optional[List[str]] = None
+    urls: list[str]
+    language: str | None = "auto"
+    max_shorts: int | None = 5
+    min_duration: int | None = 15
+    max_duration: int | None = 60
+    caption_style: str | None = "default"
+    reframe_mode: str | None = "center"
+    add_music: str | None = "none"
+    footage_layout: FootageLayout = "none"
+    footage_category: str | None = None
+    caption_position: CaptionPosition = "auto"
+    publish_targets: list[str] | None = None
 
 
 class BatchResponse(BaseModel):
     batch_id: str
-    jobs: List["JobResponse"]
+    jobs: list["JobResponse"]
     total: int
 
 
@@ -50,7 +60,7 @@ class StepInfo(BaseModel):
     id: str
     label: str
     status: str = "pending"  # pending, active, done, error
-    detail: Optional[str] = None
+    detail: str | None = None
 
 
 class JobResponse(BaseModel):
@@ -58,9 +68,9 @@ class JobResponse(BaseModel):
     status: JobStatus
     message: str
     progress: int = 0
-    steps: Optional[List[dict]] = None
-    shorts: Optional[List[dict]] = None
-    error: Optional[str] = None
+    steps: list[dict] | None = None
+    shorts: list[dict] | None = None
+    error: str | None = None
 
 
 class VideoMoment(BaseModel):
@@ -69,8 +79,8 @@ class VideoMoment(BaseModel):
     title: str
     description: str
     score: int
-    hook: Optional[str] = None
-    mood: Optional[str] = None
+    hook: str | None = None
+    mood: str | None = None
 
 
 class WordTimestamp(BaseModel):
@@ -83,5 +93,5 @@ class TranscriptSegment(BaseModel):
     start: float
     end: float
     text: str
-    words: Optional[List[WordTimestamp]] = None
-    no_speech_prob: Optional[float] = None
+    words: list[WordTimestamp] | None = None
+    no_speech_prob: float | None = None

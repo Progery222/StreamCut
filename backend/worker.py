@@ -1,19 +1,21 @@
-import re
-import json
-import hashlib
-import logging
 import asyncio
-from pathlib import Path
+import hashlib
+import json
+import logging
+import re
+
+import redis as redis_lib
 from celery import Celery
 from celery.schedules import crontab
 from config import settings
-from services.downloader import VideoDownloader
-from services.transcriber import AudioTranscriber
 from services.analyzer import MomentAnalyzer
-from services.cutter import VideoCutter
 from services.caption_renderer import CaptionRenderer
+from services.cutter import VideoCutter
+from services.downloader import VideoDownloader
+from services.footage_library import FootageLibrary
 from services.reframer import SmartReframer
-import redis as redis_lib
+from services.transcriber import AudioTranscriber
+from utils.helpers import cleanup_old_files
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -44,7 +46,6 @@ _redis = redis_lib.from_url(settings.redis_url)
 
 @celery_app.task(name="cleanup_files")
 def cleanup_files():
-    from utils.helpers import cleanup_old_files
     max_age = settings.file_max_age_hours
 
     for d in [settings.processed_path, settings.downloads_path, settings.temp_path, settings.cache_path]:
@@ -100,9 +101,7 @@ def process_video(self, job_id: str, url: str, options: dict):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        result = loop.run_until_complete(
-            _process_video_async(job_id, url, options)
-        )
+        result = loop.run_until_complete(_process_video_async(job_id, url, options))
         return result
     finally:
         loop.close()
@@ -117,6 +116,31 @@ async def _process_video_async(job_id: str, url: str, options: dict):
     reframe_mode = options.get("reframe_mode", "center")
     reframer = SmartReframer() if reframe_mode == "ai" else None
 
+    footage_layout = options.get("footage_layout", "none") or "none"
+    footage_category = options.get("footage_category")
+    caption_position = options.get("caption_position", "auto") or "auto"
+    footage_library: FootageLibrary | None = None
+    # Session ID groups all clips from one generation (or one batch) so they share
+    # the anti-duplication set in Redis. Batch → batch_id wins; otherwise → job_id.
+    footage_session_id = _redis.get(f"job:{job_id}:batch")
+    if footage_session_id is None:
+        footage_session_id = job_id
+    else:
+        footage_session_id = (
+            footage_session_id.decode() if isinstance(footage_session_id, bytes) else footage_session_id
+        )
+    if footage_layout != "none":
+        footage_library = FootageLibrary(settings.footage_library_path).load()
+        if footage_library.is_empty():
+            raise RuntimeError(
+                f"footage_layout={footage_layout!r} requested, but footage library is empty. "
+                "Run `python -m scripts.prepare_footage --source-dir storage/adhd_cut` first."
+            )
+        logger.info(
+            f"[{job_id}] Footage library loaded: layout={footage_layout}, "
+            f"category={footage_category or '(any)'}, session={footage_session_id[:8]}…"
+        )
+
     done_steps = []
 
     try:
@@ -124,13 +148,18 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         def on_download_progress(percent):
             mapped = 2 + int(percent * 0.18)  # 2-20%
             update_job_state(
-                job_id, "downloading", mapped,
+                job_id,
+                "downloading",
+                mapped,
                 f"Скачивание видео... {percent}%",
                 steps=_build_steps("download", f"{percent}%", done_steps),
             )
 
         update_job_state(
-            job_id, "downloading", 2, "Скачивание видео...",
+            job_id,
+            "downloading",
+            2,
+            "Скачивание видео...",
             steps=_build_steps("download", "Подготовка...", done_steps),
         )
         logger.info(f"[{job_id}] Скачивание: {url}")
@@ -153,11 +182,15 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         if cache_file.exists():
             try:
                 from models.schemas import TranscriptSegment
+
                 cached = json.loads(cache_file.read_text(encoding="utf-8"))
                 segments = [TranscriptSegment(**s) for s in cached]
                 logger.info(f"[{job_id}] Транскрипция из кэша: {len(segments)} сегментов")
                 update_job_state(
-                    job_id, "transcribing", 44, f"Транскрипция из кэша: {len(segments)} сегментов",
+                    job_id,
+                    "transcribing",
+                    44,
+                    f"Транскрипция из кэша: {len(segments)} сегментов",
                     steps=_build_steps("transcribe", "Из кэша ✓", done_steps),
                 )
             except Exception as e:
@@ -166,7 +199,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
 
         if segments is None:
             update_job_state(
-                job_id, "transcribing", 22, "Транскрипция аудио...",
+                job_id,
+                "transcribing",
+                22,
+                "Транскрипция аудио...",
                 steps=_build_steps("transcribe", "Whisper обрабатывает...", done_steps),
             )
             logger.info(f"[{job_id}] Транскрипция...")
@@ -188,7 +224,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             raise ValueError("Транскрипция не дала результатов. Возможно, видео без речи.")
 
         update_job_state(
-            job_id, "transcribing", 44, f"Транскрипция завершена: {len(segments)} сегментов",
+            job_id,
+            "transcribing",
+            44,
+            f"Транскрипция завершена: {len(segments)} сегментов",
             steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps),
         )
 
@@ -197,23 +236,32 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         if srt_timecodes:
             # Ручные таймкоды из SRT — пропускаем AI анализ
             from models.schemas import VideoMoment
+
             moments = []
             for i, tc in enumerate(srt_timecodes):
-                moments.append(VideoMoment(
-                    start=float(tc["start"]),
-                    end=float(tc["end"]),
-                    title=tc.get("title", f"Клип {i+1}"),
-                    description="",
-                    score=10,
-                ))
+                moments.append(
+                    VideoMoment(
+                        start=float(tc["start"]),
+                        end=float(tc["end"]),
+                        title=tc.get("title", f"Клип {i + 1}"),
+                        description="",
+                        score=10,
+                    )
+                )
             update_job_state(
-                job_id, "analyzing", 55, f"Использованы SRT таймкоды: {len(moments)} клипов",
+                job_id,
+                "analyzing",
+                55,
+                f"Использованы SRT таймкоды: {len(moments)} клипов",
                 steps=_build_steps("analyze", f"{len(moments)} из SRT", done_steps),
             )
             logger.info(f"[{job_id}] SRT таймкоды: {len(moments)} клипов")
         else:
             update_job_state(
-                job_id, "analyzing", 46, "AI анализирует лучшие моменты...",
+                job_id,
+                "analyzing",
+                46,
+                "AI анализирует лучшие моменты...",
                 steps=_build_steps("analyze", "GPT-4o-mini думает...", done_steps),
             )
             logger.info(f"[{job_id}] Анализ моментов...")
@@ -242,34 +290,44 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         completed_count = [0]
 
         async def process_clip(i, moment):
-            logger.info(f"[{job_id}] Шортс {i+1}: {moment.start:.1f}s - {moment.end:.1f}s")
+            logger.info(f"[{job_id}] Шортс {i + 1}: {moment.start:.1f}s - {moment.end:.1f}s")
 
             clip_path = settings.temp_path / f"{job_id}_clip_{i}.mp4"
             await cutter.cut_clip(video_path, moment.start, moment.end, clip_path)
 
             vertical_path = settings.temp_path / f"{job_id}_vertical_{i}.mp4"
 
-            if reframer:
+            if footage_library is not None:
+                clip_dur = moment.end - moment.start
+                footage_path = footage_library.pick(
+                    duration=clip_dur,
+                    category=footage_category,
+                    session_id=footage_session_id,
+                    redis_client=_redis,
+                    seed=hash((job_id, i)),
+                )
+                logger.info(f"[{job_id}] Clip {i + 1}: footage layout={footage_layout!r} footage={footage_path.name}")
+                await cutter.convert_to_vertical_with_footage(
+                    clip_path,
+                    vertical_path,
+                    layout=footage_layout,
+                    footage=footage_path,
+                )
+            elif reframer:
                 clip_w, clip_h = await cutter._get_video_dimensions(clip_path)
                 if clip_h < clip_w:
                     loop = asyncio.get_event_loop()
-                    is_th = await loop.run_in_executor(
-                        None, reframer.is_talking_head, clip_path
-                    )
+                    is_th = await loop.run_in_executor(None, reframer.is_talking_head, clip_path)
                     if is_th:
-                        logger.info(f"[{job_id}] Clip {i+1}: talking head")
+                        logger.info(f"[{job_id}] Clip {i + 1}: talking head")
                         await cutter.convert_to_vertical_fit(clip_path, vertical_path)
                     else:
-                        face_box = await loop.run_in_executor(
-                            None, reframer.detect_face_region, clip_path
-                        )
+                        face_box = await loop.run_in_executor(None, reframer.detect_face_region, clip_path)
                         if face_box:
-                            logger.info(f"[{job_id}] Clip {i+1}: split-screen")
-                            await cutter.convert_to_vertical_split(
-                                clip_path, vertical_path, face_box, clip_w, clip_h
-                            )
+                            logger.info(f"[{job_id}] Clip {i + 1}: split-screen")
+                            await cutter.convert_to_vertical_split(clip_path, vertical_path, face_box, clip_w, clip_h)
                         else:
-                            logger.info(f"[{job_id}] Clip {i+1}: smart crop")
+                            logger.info(f"[{job_id}] Clip {i + 1}: smart crop")
                             keyframes = await reframer.compute_crop_trajectory(clip_path, clip_w, clip_h)
                             crop_filter = reframer.generate_crop_filter(keyframes, clip_w, clip_h)
                             await cutter.convert_to_vertical_smart(clip_path, vertical_path, crop_filter)
@@ -278,13 +336,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             else:
                 await cutter.convert_to_vertical(clip_path, vertical_path)
 
-            output_filename = f"short_{i+1}_{_safe_filename(moment.title)}.mp4"
+            output_filename = f"short_{i + 1}_{_safe_filename(moment.title)}.mp4"
             final_path = job_output_dir / output_filename
 
-            clip_segments = [
-                s for s in segments
-                if s.end > moment.start - 0.1 and s.start < moment.end + 0.1
-            ]
+            clip_segments = [s for s in segments if s.end > moment.start - 0.1 and s.start < moment.end + 0.1]
 
             # Авто-подбор музыки по настроению клипа
             clip_music = add_music
@@ -299,6 +354,8 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 video_start=moment.start,
                 add_music=clip_music,
                 hook_text=moment.hook,
+                footage_layout=footage_layout,
+                caption_position=caption_position,
             )
 
             clip_path.unlink(missing_ok=True)
@@ -307,7 +364,9 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             completed_count[0] += 1
             pct = 55 + int((completed_count[0] / total_moments) * 40)
             update_job_state(
-                job_id, "rendering", pct,
+                job_id,
+                "rendering",
+                pct,
                 f"Готово {completed_count[0]}/{total_moments} шортсов",
                 steps=_build_steps("render", f"{completed_count[0]}/{total_moments}", done_steps + ["cut", "reframe"]),
             )
@@ -316,6 +375,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
 
             # Upload to R2 if configured
             from services.storage import storage
+
             storage_key = f"{job_id}/{output_filename}"
             video_url = storage.upload(final_path, storage_key) if storage.use_r2 else f"/storage/{storage_key}"
 
@@ -333,7 +393,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             }
 
         update_job_state(
-            job_id, "cutting", 55, f"Обработка {total_moments} клипов параллельно...",
+            job_id,
+            "cutting",
+            55,
+            f"Обработка {total_moments} клипов параллельно...",
             steps=_build_steps("cut", f"0/{total_moments}", done_steps),
         )
 
@@ -344,9 +407,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             async with semaphore:
                 return await process_clip(i, moment)
 
-        results = await asyncio.gather(
-            *[limited_process(i, m) for i, m in enumerate(moments)]
-        )
+        results = await asyncio.gather(*[limited_process(i, m) for i, m in enumerate(moments)])
         shorts = list(results)
         shorts.sort(key=lambda x: x["index"])
 
@@ -358,12 +419,15 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         if publish_targets:
             username = options.get("username", "")
             update_job_state(
-                job_id, "publishing", 95, "Публикация шортсов...",
+                job_id,
+                "publishing",
+                95,
+                "Публикация шортсов...",
                 steps=_build_steps("publish", "Загрузка...", done_steps),
                 shorts=shorts,
             )
 
-            from services.publisher import YouTubePublisher, TikTokPublisher
+            from services.publisher import TikTokPublisher, YouTubePublisher
             from services.token_encryption import decrypt_tokens
 
             publishers = {}
@@ -384,7 +448,8 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 for target, (pub, tokens) in publishers.items():
                     try:
                         pub_url = await pub.upload(
-                            tokens, final_path,
+                            tokens,
+                            final_path,
                             title=short["title"],
                             description=short.get("description", ""),
                         )
@@ -399,7 +464,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             done_steps.append("publish")
 
         update_job_state(
-            job_id, "done", 100, f"Готово! Создано {len(shorts)} шортсов",
+            job_id,
+            "done",
+            100,
+            f"Готово! Создано {len(shorts)} шортсов",
             steps=_build_steps("done", None, done_steps),
             shorts=shorts,
         )
@@ -410,7 +478,10 @@ async def _process_video_async(job_id: str, url: str, options: dict):
     except Exception as e:
         logger.error(f"[{job_id}] Ошибка: {e}", exc_info=True)
         update_job_state(
-            job_id, "error", 0, f"Ошибка: {str(e)}",
+            job_id,
+            "error",
+            0,
+            f"Ошибка: {str(e)}",
             error=str(e),
             steps=_build_steps("error", str(e), done_steps),
         )
@@ -418,6 +489,6 @@ async def _process_video_async(job_id: str, url: str, options: dict):
 
 
 def _safe_filename(text: str) -> str:
-    safe = re.sub(r'[^\w\s-]', '', text.lower())
-    safe = re.sub(r'[-\s]+', '-', safe).strip('-')
+    safe = re.sub(r"[^\w\s-]", "", text.lower())
+    safe = re.sub(r"[-\s]+", "-", safe).strip("-")
     return safe[:50] or "short"

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import List
+
 from models.schemas import TranscriptSegment
 
 logger = logging.getLogger(__name__)
@@ -65,8 +65,29 @@ class CaptionRenderer:
         cs = int((seconds % 1) * 100)
         return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
-    def _ass_header(self, style_name: str, fontsize: int, borderw: int,
-                    secondary_color: str = "&H000000FF") -> str:
+    @staticmethod
+    def _margin_v_for_layout(footage_layout: str, caption_position: str) -> int:
+        """Pick MarginV (distance from bottom, PlayResY=1920) so captions sit near the
+        bottom of the streamer's visible slot.
+
+        caption_position='fixed_bottom' → always 500 (legacy behavior, y≈1420).
+        caption_position='auto' → adjust per layout so subtitles stay inside the streamer zone:
+            none / footage_top    → 500  (y≈1420, inside full-screen or bottom-half streamer)
+            footage_bottom        → 1070 (y≈850, near bottom of 0..960 streamer slot)
+            background            → 690  (y≈1230, near bottom of 640..1280 streamer slot)
+        """
+        if caption_position == "fixed_bottom":
+            return 500
+        if footage_layout == "footage_bottom":
+            return 1070
+        if footage_layout == "background":
+            return 690
+        # none, footage_top → default
+        return 500
+
+    def _ass_header(
+        self, style_name: str, fontsize: int, borderw: int, secondary_color: str = "&H000000FF", margin_v: int = 500
+    ) -> str:
         return f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -75,7 +96,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: {style_name},Arial,{fontsize},&H00FFFFFF,{secondary_color},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{borderw},0,2,20,20,500,1
+Style: {style_name},Arial,{fontsize},&H00FFFFFF,{secondary_color},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{borderw},0,2,20,20,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -83,19 +104,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     def _create_ass_subtitles(
         self,
-        segments: List[TranscriptSegment],
+        segments: list[TranscriptSegment],
         output_path: Path,
         style: str = "default",
         video_start: float = 0.0,
+        margin_v: int = 500,
     ) -> Path:
         if style in ("karaoke", "glow", "bold"):
-            return self._create_ass_karaoke(segments, output_path, video_start, style)
+            return self._create_ass_karaoke(segments, output_path, video_start, style, margin_v)
 
         s = CAPTION_STYLES.get(style, CAPTION_STYLES["default"])
         fontsize = s["fontsize"]
         borderw = s["borderw"]
 
-        lines = [self._ass_header("Default", fontsize, borderw)]
+        lines = [self._ass_header("Default", fontsize, borderw, margin_v=margin_v)]
 
         for seg in segments:
             seg_start = seg.start - video_start
@@ -115,9 +137,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 mid = len(words) // 2
                 text = " ".join(words[:mid]) + "\\N" + " ".join(words[mid:])
 
-            lines.append(
-                f"Dialogue: 0,{start_fmt},{end_fmt},Default,,0,0,0,,{text}\n"
-            )
+            lines.append(f"Dialogue: 0,{start_fmt},{end_fmt},Default,,0,0,0,,{text}\n")
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
@@ -126,10 +146,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     def _create_ass_karaoke(
         self,
-        segments: List[TranscriptSegment],
+        segments: list[TranscriptSegment],
         output_path: Path,
         video_start: float = 0.0,
         style_name: str = "karaoke",
+        margin_v: int = 500,
     ) -> Path:
         """Klap-style: показывает 2-3 слова за раз, текущее слово выделено цветом."""
         s = CAPTION_STYLES.get(style_name, CAPTION_STYLES["karaoke"])
@@ -142,7 +163,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Word,Montserrat ExtraBold,{s['fontsize']},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,{s['borderw']},3,2,40,40,500,1
+Style: Word,Montserrat ExtraBold,{s["fontsize"]},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,2,0,1,{s["borderw"]},3,2,40,40,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -175,13 +196,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         i = 0
         while i < len(all_words):
             chunk_size = min(3, len(all_words) - i)
-            group = all_words[i:i + chunk_size]
+            group = all_words[i : i + chunk_size]
             groups.append(group)
             i += chunk_size
 
         # Для каждой группы: показываем все слова, но подсвечиваем текущее
         for group in groups:
-            for word_idx, (ws, we, word) in enumerate(group):
+            for word_idx, (ws, we, _word) in enumerate(group):
                 # Строим текст: все слова группы, текущее — жёлтым
                 parts = []
                 for j, (_, _, w) in enumerate(group):
@@ -194,9 +215,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 text = " ".join(parts)
                 start_fmt = self._format_ass_time(max(0, ws))
                 end_fmt = self._format_ass_time(we)
-                lines.append(
-                    f"Dialogue: 0,{start_fmt},{end_fmt},Word,,0,0,0,,{text}\n"
-                )
+                lines.append(f"Dialogue: 0,{start_fmt},{end_fmt},Word,,0,0,0,,{text}\n")
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
@@ -206,20 +225,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     async def render_captions(
         self,
         video_path: Path,
-        segments: List[TranscriptSegment],
+        segments: list[TranscriptSegment],
         output_path: Path,
         style: str = "default",
         video_start: float = 0.0,
         add_music: str = "none",
         hook_text: str = None,
+        footage_layout: str = "none",
+        caption_position: str = "auto",
     ) -> Path:
         ass_path = video_path.parent / f"{video_path.stem}.ass"
+
+        margin_v = self._margin_v_for_layout(footage_layout, caption_position)
 
         self._create_ass_subtitles(
             segments=segments,
             output_path=ass_path,
             style=style,
             video_start=video_start,
+            margin_v=margin_v,
         )
 
         # Добавляем hook-текст в первые 3 секунды
@@ -228,7 +252,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 f"Dialogue: 1,0:00:00.00,0:00:03.00,Hook,,0,0,0,,"
                 f"{{\\fad(300,300)\\an8\\fs48\\b1\\c&H00FFFF&}}{hook_text.upper()}\n"
             )
-            with open(ass_path, "r", encoding="utf-8") as f:
+            with open(ass_path, encoding="utf-8") as f:
                 content = f.read()
             # Добавляем стиль Hook если нет
             if "Style: Hook" not in content:
@@ -255,33 +279,51 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
             fonts_dir = "/app/fonts"
             cmd = [
-                "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-stream_loop", "-1",
-                "-i", str(music_path),
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(music_path),
                 "-filter_complex",
                 f"[0:v]ass='{ass_escaped}':fontsdir='{fonts_dir}'[vout];"
                 f"[0:a]volume=1.0[voice];[1:a]volume=0.15[music];"
                 f"[voice][music]amix=inputs=2:duration=first[aout]",
-                "-map", "[vout]",
-                "-map", "[aout]",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-c:a", "aac",
-                "-b:a", "192k",
+                "-map",
+                "[vout]",
+                "-map",
+                "[aout]",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "20",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
                 "-shortest",
                 str(output_path),
             ]
         else:
             cmd = [
-                "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-vf", f"ass={ass_path}:fontsdir=/app/fonts",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "20",
-                "-c:a", "copy",
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(video_path),
+                "-vf",
+                f"ass={ass_path}:fontsdir=/app/fonts",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                "-crf",
+                "20",
+                "-c:a",
+                "copy",
                 str(output_path),
             ]
 
