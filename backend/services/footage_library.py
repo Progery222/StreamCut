@@ -124,13 +124,19 @@ class FootageLibrary:
         all_cats = self.list_categories()
         if not all_cats:
             raise RuntimeError("Footage library is empty — no categories available.")
+        if requested == "random" and all_cats:
+            import random
+            return random.choice(all_cats)
         if requested and requested in all_cats:
             return requested
         if requested:
             logger.warning(
-                f"Category {requested!r} not found in footage library; falling back to all categories {all_cats}"
+                f"Category {requested!r} not found in footage library; falling back to a random category from {all_cats}"
             )
-        return all_cats[0]  # deterministic fallback
+            import random
+            return random.choice(all_cats)
+        import random
+        return random.choice(all_cats)
 
     def pick(
         self,

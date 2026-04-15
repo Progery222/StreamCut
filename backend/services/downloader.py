@@ -23,7 +23,7 @@ class VideoDownloader:
                     percent = int((downloaded / total) * 100)
                     progress_callback(percent)
 
-        return {
+        ydl_opts = {
             "format": "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
             "outtmpl": output_template,
             "progress_hooks": [progress_hook],
@@ -34,6 +34,12 @@ class VideoDownloader:
                 "youtube": {"skip": ["dash", "hls"]},
             },
         }
+        
+        cookie_path = Path("storage/cookies.txt")
+        if cookie_path.exists():
+            ydl_opts["cookiefile"] = str(cookie_path)
+            
+        return ydl_opts
 
     async def download(
         self,
@@ -110,7 +116,12 @@ class VideoDownloader:
         loop = asyncio.get_event_loop()
 
         def _get_info():
-            with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+            ydl_opts = {"quiet": True}
+            cookie_path = Path("storage/cookies.txt")
+            if cookie_path.exists():
+                ydl_opts["cookiefile"] = str(cookie_path)
+                
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(url, download=False)
 
         return await loop.run_in_executor(None, _get_info)

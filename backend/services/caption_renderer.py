@@ -274,58 +274,79 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         use_music = music_path is not None and music_path.exists()
         logger.info(f"Render: style={style}, music={add_music}, use={use_music}")
 
+        # Config for Watermark (professional style: centered logo and text)
+        logo_path = Path("/app/storage/rumble_logo.png")
+        use_logo = logo_path.exists()
+        
+        wm_x = 180
+        wm_y = 910
+        # Vertical center for 70px bar: 910 + 35 = 945
+        # Logo (48x48): 945 - 24 = 921
+        # Text (40px): 945 - 20 = 925
+        # Horizontal: Logo at 220, spacing 10px, Text at 278
+        wm_vf = (
+            f"drawbox=x={wm_x}:y={wm_y}:w=720:h=70:color=black@0.6:t=fill,"
+            f"drawtext=fontfile='/app/fonts/Montserrat-ExtraBold.ttf':text='rumble.com/PhilGodlewski':fontsize=40:fontcolor=white:x=278:y=925"
+        )
+
         if use_music:
-            # Видео + музыка: субтитры + микшируем голос (100%) + музыку (8%)
             ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
             fonts_dir = "/app/fonts"
+            
+            # Base text overlay + ASS subtitles
+            v_chain = f"[0:v]{wm_vf},ass='{ass_escaped}':fontsdir='{fonts_dir}'[v_txt];"
+            
+            # If we have a logo, overlay it
+            if use_logo:
+                v_chain += f"[v_txt][1:v]overlay=x=220:y=921[vout];"
+            else:
+                v_chain += f"[v_txt]copy[vout];"
+
+            # Music mixing
+            a_chain = f"[0:a]volume=1.0[voice];[{2 if use_logo else 1}:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=first[aout]"
+            
             cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(video_path),
-                "-stream_loop",
-                "-1",
-                "-i",
-                str(music_path),
-                "-filter_complex",
-                f"[0:v]ass='{ass_escaped}':fontsdir='{fonts_dir}'[vout];"
-                f"[0:a]volume=1.0[voice];[1:a]volume=0.15[music];"
-                f"[voice][music]amix=inputs=2:duration=first[aout]",
-                "-map",
-                "[vout]",
-                "-map",
-                "[aout]",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "20",
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-shortest",
-                str(output_path),
+                "ffmpeg", "-y",
+                "-i", str(video_path)
             ]
+            
+            if use_logo:
+                cmd.extend(["-i", str(logo_path)])
+                
+            cmd.extend([
+                "-stream_loop", "-1", "-i", str(music_path),
+                "-filter_complex", v_chain + a_chain,
+                "-map", "[vout]", "-map", "[aout]",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                "-c:a", "aac", "-b:a", "192k", "-shortest",
+                str(output_path)
+            ])
         else:
+            ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
+            v_chain = f"{wm_vf},ass='{ass_escaped}':fontsdir=/app/fonts"
+
             cmd = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(video_path),
-                "-vf",
-                f"ass={ass_path}:fontsdir=/app/fonts",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "fast",
-                "-crf",
-                "20",
-                "-c:a",
-                "copy",
-                str(output_path),
+                "ffmpeg", "-y",
+                "-i", str(video_path)
             ]
+            
+            if use_logo:
+                cmd.extend(["-i", str(logo_path)])
+                filter_complex = f"[0:v]{v_chain}[v_txt];[v_txt][1:v]overlay=x=220:y=921[vout]"
+                cmd.extend([
+                    "-filter_complex", filter_complex,
+                    "-map", "[vout]", "-map", "0:a?",
+                ])
+            else:
+                cmd.extend([
+                    "-vf", v_chain,
+                ])
+                
+            cmd.extend([
+                "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+                "-c:a", "copy",
+                str(output_path)
+            ])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
