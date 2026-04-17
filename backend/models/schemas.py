@@ -31,6 +31,7 @@ class CreateJobRequest(BaseModel):
     footage_layout: FootageLayout = "none"
     footage_category: str | None = None  # filter footage library by category
     caption_position: CaptionPosition = "auto"  # auto → follows layout; fixed_bottom → always y≈1420
+    add_watermark: bool = True  # add rumble.com watermark to video
     srt_timecodes: list[dict] | None = None  # [{start, end, title?}]
     publish_targets: list[str] | None = None
 
@@ -47,6 +48,7 @@ class CreateBatchRequest(BaseModel):
     footage_layout: FootageLayout = "none"
     footage_category: str | None = None
     caption_position: CaptionPosition = "auto"
+    add_watermark: bool = True
     publish_targets: list[str] | None = None
 
 

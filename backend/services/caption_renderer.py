@@ -233,6 +233,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         hook_text: str = None,
         footage_layout: str = "none",
         caption_position: str = "auto",
+        add_watermark: bool = True,
     ) -> Path:
         ass_path = video_path.parent / f"{video_path.stem}.ass"
 
@@ -272,45 +273,42 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }
         music_path = music_tracks.get(add_music)
         use_music = music_path is not None and music_path.exists()
-        logger.info(f"Render: style={style}, music={add_music}, use={use_music}")
+        logger.info(f"Render: style={style}, music={add_music}, use={use_music}, watermark={add_watermark}")
 
         # Config for Watermark (professional style: centered logo and text)
         logo_path = Path("/app/storage/rumble_logo.png")
-        use_logo = logo_path.exists()
+        use_watermark = add_watermark and logo_path.exists()
         
-        wm_x = 180
-        wm_y = 910
-        # Vertical center for 70px bar: 910 + 35 = 945
-        # Logo (48x48): 945 - 24 = 921
-        # Text (40px): 945 - 20 = 925
-        # Horizontal: Logo at 220, spacing 10px, Text at 278
-        wm_vf = (
-            f"drawbox=x={wm_x}:y={wm_y}:w=720:h=70:color=black@0.6:t=fill,"
-            f"drawtext=fontfile='/app/fonts/Montserrat-ExtraBold.ttf':text='rumble.com/PhilGodlewski':fontsize=40:fontcolor=white:x=278:y=925"
-        )
+        if use_watermark:
+            wm_x = 180
+            wm_y = 910
+            wm_vf = (
+                f"drawbox=x={wm_x}:y={wm_y}:w=720:h=70:color=black@0.6:t=fill,"
+                f"drawtext=fontfile='/app/fonts/Montserrat-ExtraBold.ttf':text='rumble.com/PhilGodlewski':fontsize=40:fontcolor=white:x=278:y=925"
+            )
 
         if use_music:
             ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
             fonts_dir = "/app/fonts"
             
             # Base text overlay + ASS subtitles
-            v_chain = f"[0:v]{wm_vf},ass='{ass_escaped}':fontsdir='{fonts_dir}'[v_txt];"
-            
-            # If we have a logo, overlay it
-            if use_logo:
+            if use_watermark:
+                v_chain = f"[0:v]{wm_vf},ass='{ass_escaped}':fontsdir='{fonts_dir}'[v_txt];"
                 v_chain += f"[v_txt][1:v]overlay=x=220:y=921[vout];"
+                logo_input = 1
             else:
-                v_chain += f"[v_txt]copy[vout];"
+                v_chain = f"[0:v]ass='{ass_escaped}':fontsdir='{fonts_dir}'[vout];"
+                logo_input = 0
 
             # Music mixing
-            a_chain = f"[0:a]volume=1.0[voice];[{2 if use_logo else 1}:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=first[aout]"
+            a_chain = f"[0:a]volume=1.0[voice];[{1 + logo_input}:a]volume=0.15[music];[voice][music]amix=inputs=2:duration=first[aout]"
             
             cmd = [
                 "ffmpeg", "-y",
                 "-i", str(video_path)
             ]
             
-            if use_logo:
+            if use_watermark:
                 cmd.extend(["-i", str(logo_path)])
                 
             cmd.extend([
@@ -323,14 +321,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             ])
         else:
             ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-            v_chain = f"{wm_vf},ass='{ass_escaped}':fontsdir=/app/fonts"
-
+            
             cmd = [
                 "ffmpeg", "-y",
                 "-i", str(video_path)
             ]
             
-            if use_logo:
+            if use_watermark:
+                v_chain = f"{wm_vf},ass='{ass_escaped}':fontsdir=/app/fonts"
                 cmd.extend(["-i", str(logo_path)])
                 filter_complex = f"[0:v]{v_chain}[v_txt];[v_txt][1:v]overlay=x=220:y=921[vout]"
                 cmd.extend([
@@ -339,7 +337,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 ])
             else:
                 cmd.extend([
-                    "-vf", v_chain,
+                    "-vf", f"ass='{ass_escaped}':fontsdir=/app/fonts",
                 ])
                 
             cmd.extend([

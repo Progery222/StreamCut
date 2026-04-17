@@ -155,7 +155,12 @@
               </select>
             </div>
           </div>
-          <div class="settings-checks">
+           <div class="settings-checks">
+            <label class="check-label">
+              <input type="checkbox" id="add-watermark" checked />
+              <span class="checkmark"></span>
+              <span>Водяной знак (rumble.com)</span>
+            </label>
             <label class="check-label">
               <input type="file" id="srt-file" accept=".srt" style="display:none" onchange="handleSrtUpload(this)" />
               <span class="checkmark" onclick="document.getElementById('srt-file').click()" style="cursor:pointer">

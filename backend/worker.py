@@ -124,6 +124,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
     footage_layout = options.get("footage_layout", "none") or "none"
     footage_category = options.get("footage_category")
     caption_position = options.get("caption_position", "auto") or "auto"
+    add_watermark = options.get("add_watermark", True)
     footage_library: FootageLibrary | None = None
     # Session ID groups all clips from one generation (or one batch) so they share
     # the anti-duplication set in Redis. Batch → batch_id wins; otherwise → job_id.
@@ -373,6 +374,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 hook_text=moment.hook,
                 footage_layout=footage_layout,
                 caption_position=caption_position,
+                add_watermark=add_watermark,
             )
 
             clip_path.unlink(missing_ok=True)
