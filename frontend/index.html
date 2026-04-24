@@ -82,6 +82,14 @@
         </div>
 
         <div class="settings-panel" id="settings-panel" style="display:none">
+          <div class="preset-bar">
+            <select id="preset-select">
+              <option value="">— Пресеты —</option>
+            </select>
+            <button class="btn-sm" onclick="loadPreset()" title="Применить пресет">📂 Применить</button>
+            <button class="btn-sm" onclick="savePresetDialog()" title="Сохранить текущие настройки">💾 Сохранить</button>
+            <button class="btn-sm btn-danger" onclick="deletePreset()" title="Удалить пресет">🗑</button>
+          </div>
           <div class="settings-grid">
             <div class="setting-item">
               <label>Язык</label>

@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from models.schemas import BatchResponse, CreateBatchRequest, CreateJobRequest, JobResponse, JobStatus
 from routers.auth import router as auth_router
 from routers.oauth import router as oauth_router
+from routers.presets import router as presets_router
 from services.footage_library import FootageLibrary
 from worker import celery_app, update_job_state
 
@@ -32,6 +33,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(oauth_router, prefix="/auth", tags=["oauth"])
+app.include_router(presets_router, prefix="/presets", tags=["presets"])
 
 app.mount(
     "/storage",

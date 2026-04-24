@@ -36,6 +36,7 @@ async function checkAuth() {
     document.getElementById("user-info").style.display = "flex";
     loadConnections();
     loadHistory();
+    loadPresets();
   } catch {
     localStorage.removeItem("token");
     hideAuthModal();
@@ -709,6 +710,93 @@ function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text;
   return div.innerHTML;
+}
+
+// === Presets ===
+
+function collectSettings() {
+  return {
+    language: document.getElementById("language").value,
+    max_shorts: parseInt(document.getElementById("max-shorts").value),
+    caption_style: document.getElementById("caption-style").value,
+    reframe_mode: document.getElementById("reframe-mode").value,
+    add_music: document.getElementById("add-music").value,
+    footage_layout: document.getElementById("footage-layout").value,
+    footage_category: document.getElementById("footage-category").value || null,
+    caption_position: document.getElementById("caption-position").value,
+    add_watermark: document.getElementById("add-watermark").checked,
+  };
+}
+
+function applySettings(s) {
+  document.getElementById("language").value = s.language || "auto";
+  document.getElementById("max-shorts").value = String(s.max_shorts || 5);
+  document.getElementById("caption-style").value = s.caption_style || "default";
+  document.getElementById("reframe-mode").value = s.reframe_mode || "center";
+  document.getElementById("add-music").value = s.add_music || "none";
+  document.getElementById("footage-layout").value = s.footage_layout || "none";
+  document.getElementById("footage-category").value = s.footage_category || "";
+  document.getElementById("caption-position").value = s.caption_position || "auto";
+  document.getElementById("add-watermark").checked = s.add_watermark !== false;
+}
+
+async function loadPresets() {
+  try {
+    const res = await fetch(`${API_BASE}/presets`, { headers: authHeaders() });
+    if (!res.ok) return;
+    const presets = await res.json();
+    const sel = document.getElementById("preset-select");
+    sel.innerHTML = '<option value="">— Пресеты —</option>';
+    presets.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    });
+  } catch {}
+}
+
+function loadPreset() {
+  const name = document.getElementById("preset-select").value;
+  if (!name) return;
+  fetch(`${API_BASE}/presets`, { headers: authHeaders() })
+    .then(r => r.json())
+    .then(presets => {
+      const p = presets.find(p => p.name === name);
+      if (p) applySettings(p.data);
+    })
+    .catch(() => {});
+}
+
+function savePresetDialog() {
+  const name = prompt("Имя пресета:");
+  if (!name) return;
+  const settings = collectSettings();
+  settings.name = name;
+  fetch(`${API_BASE}/presets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(settings),
+  })
+    .then(r => r.json())
+    .then(() => {
+      loadPresets();
+      document.getElementById("preset-select").value = name;
+    })
+    .catch(() => {});
+}
+
+function deletePreset() {
+  const name = document.getElementById("preset-select").value;
+  if (!name) return;
+  if (!confirm(`Удалить пресет "${name}"?`)) return;
+  fetch(`${API_BASE}/presets/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  })
+    .then(r => r.json())
+    .then(() => loadPresets())
+    .catch(() => {});
 }
 
 // === Init ===
