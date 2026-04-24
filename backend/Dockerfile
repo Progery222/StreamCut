@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY requirements.txt backend/requirements.txt* ./
-# When built from repo root, prefer backend/requirements.txt
+COPY requirements.txt ./
+# When built from repo root context, backend/requirements.txt may exist
 RUN if [ -f backend/requirements.txt ]; then cp backend/requirements.txt requirements.txt; fi
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt \
