@@ -1,0 +1,40 @@
+# docker-compose.prod.yml
+# Production overlay for StreamCut.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.prod.yml up -d
+#
+# This file applies production-specific overrides:
+# - Removes exposed Redis port
+# - Binds backend to localhost only
+# - Removes development volume mounts
+# - Disables auto-reload
+# - Adds Redis data persistence
+# - Uses GPU Dockerfile for worker
+# - Changes restart policy to unless-stopped
+
+services:
+  redis:
+    restart: unless-stopped
+    ports: !override []
+    volumes:
+      - redis-data:/data
+
+  backend:
+    restart: unless-stopped
+    ports: !override
+      - "127.0.0.1:8003:8000"
+    volumes: !override
+      - ./storage:/app/storage
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    restart: unless-stopped
+    build:
+      dockerfile: Dockerfile.gpu
+    volumes: !override
+      - ./storage:/app/storage
+
+  nginx:
+    restart: unless-stopped
+
+volumes:
+  redis-data:
