@@ -82,14 +82,14 @@ info ".env file found"
 
 info "Validating .env..."
 
-if grep -qE '^JWT_SECRET\s*=\s*(changeme|placeholder|default|secret|YOUR_JWT_SECRET)\s*$' .env 2>/dev/null || \
+if grep -qE '^JWT_SECRET\s*=\s*(changeme|change_me|placeholder|default|secret|YOUR_JWT_SECRET)\s*$' .env 2>/dev/null || \
    ! grep -qE '^JWT_SECRET\s*=\s*[^\s#]+' .env 2>/dev/null; then
     error "JWT_SECRET is not set or is using a placeholder value in .env"
     exit 1
 fi
 info "JWT_SECRET OK"
 
-if ! grep -qE '^OPENAI_API_KEY\s*=\s*sk-[a-zA-Z0-9]+' .env 2>/dev/null; then
+if ! grep -qE '^OPENAI_API_KEY\s*=\s*sk-[a-zA-Z0-9_-]{20,}' .env 2>/dev/null; then
     error "OPENAI_API_KEY is missing or invalid in .env"
     exit 1
 fi
@@ -125,7 +125,7 @@ info "Services started"
 # ── Health check ──────────────────────────────────────────────────────────────
 
 info "Waiting for backend health check..."
-HEALTH_URL="http://localhost:8000/health"
+HEALTH_URL="http://localhost:8003/health"
 TIMEOUT=120
 ELAPSED=0
 INTERVAL=2
