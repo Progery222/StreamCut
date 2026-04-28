@@ -4,6 +4,7 @@ uvicorn[standard]==0.30.0
 celery==5.3.6
 redis==5.0.4
 yt-dlp>=2025.3.31
+curl_cffi>=0.7.0,<0.15
 openai>=1.60.0
 python-multipart==0.0.9
 pydantic==2.7.1

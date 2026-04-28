@@ -1,4 +1,5 @@
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 import asyncio
 import hashlib
 import logging
@@ -33,6 +34,7 @@ class VideoDownloader:
             "extractor_args": {
                 "youtube": {"skip": ["dash", "hls"]},
             },
+                "impersonate": ImpersonateTarget("chrome", None, None, None),
         }
         
         cookie_path = Path("storage/cookies.txt")
@@ -52,6 +54,16 @@ class VideoDownloader:
 
         def _download():
             from services.storage import storage
+
+            # 0) If url is a local file path, copy it directly
+            local_path = Path(url)
+            if local_path.exists() and local_path.is_file():
+                ext = local_path.suffix.lstrip(".") or "mp4"
+                target = self.output_dir / f"{job_id}.{ext}"
+                import shutil
+                shutil.copy2(local_path, target)
+                logger.info(f"Video from local path: {local_path} -> {target}")
+                return target
 
             url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
 
@@ -116,11 +128,14 @@ class VideoDownloader:
         loop = asyncio.get_event_loop()
 
         def _get_info():
-            ydl_opts = {"quiet": True}
+            ydl_opts = {
+                "quiet": True,
+            "impersonate": ImpersonateTarget("chrome", None, None, None),
+            }
             cookie_path = Path("storage/cookies.txt")
             if cookie_path.exists():
                 ydl_opts["cookiefile"] = str(cookie_path)
-                
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 return ydl.extract_info(url, download=False)
 

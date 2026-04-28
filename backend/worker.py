@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import re
+from pathlib import Path
 
 import redis as redis_lib
 from celery import Celery
@@ -150,34 +151,49 @@ async def _process_video_async(job_id: str, url: str, options: dict):
     done_steps = []
 
     try:
-        # === ШАГ 1: Скачивание ===
-        def on_download_progress(percent):
-            mapped = 2 + int(percent * 0.18)  # 2-20%
+        # === ШАГ 1: Скачивание (или использование готового файла) ===
+        skip_download = options.get("skip_download", False)
+        provided_video_path = options.get("video_path")
+
+        if skip_download and provided_video_path:
+            video_path = Path(provided_video_path)
             update_job_state(
                 job_id,
                 "downloading",
-                mapped,
-                f"Скачивание видео... {percent}%",
-                steps=_build_steps("download", f"{percent}%", done_steps),
+                20,
+                "Используем готовый файл",
+                steps=_build_steps("download", "Готовый файл ✓", done_steps),
             )
+            logger.info(f"[{job_id}] Используем готовый файл: {video_path}")
+            done_steps.append("download")
+        else:
+            def on_download_progress(percent):
+                mapped = 2 + int(percent * 0.18)  # 2-20%
+                update_job_state(
+                    job_id,
+                    "downloading",
+                    mapped,
+                    f"Скачивание видео... {percent}%",
+                    steps=_build_steps("download", f"{percent}%", done_steps),
+                )
 
-        update_job_state(
-            job_id,
-            "downloading",
-            2,
-            "Скачивание видео...",
-            steps=_build_steps("download", "Подготовка...", done_steps),
-        )
-        logger.info(f"[{job_id}] Скачивание: {url}")
+            update_job_state(
+                job_id,
+                "downloading",
+                2,
+                "Скачивание видео...",
+                steps=_build_steps("download", "Подготовка...", done_steps),
+            )
+            logger.info(f"[{job_id}] Скачивание: {url}")
 
-        video_path = await downloader.download(
-            url=url,
-            job_id=job_id,
-            max_duration=settings.max_video_duration,
-            progress_callback=on_download_progress,
-        )
-        done_steps.append("download")
-        logger.info(f"[{job_id}] Видео скачано: {video_path}")
+            video_path = await downloader.download(
+                url=url,
+                job_id=job_id,
+                max_duration=settings.max_video_duration,
+                progress_callback=on_download_progress,
+            )
+            done_steps.append("download")
+            logger.info(f"[{job_id}] Видео скачано: {video_path}")
 
         # === ШАГ 2: Транскрипция (с кэшем) ===
         language = options.get("language", "auto")
@@ -428,7 +444,8 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         shorts.sort(key=lambda x: x["index"])
 
         done_steps.extend(["cut", "reframe", "render"])
-        video_path.unlink(missing_ok=True)
+        if not skip_download:
+            video_path.unlink(missing_ok=True)
 
         # === ШАГ 6: Публикация (если запрошена) ===
         publish_targets = options.get("publish_targets") or []
