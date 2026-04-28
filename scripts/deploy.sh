@@ -82,7 +82,7 @@ info ".env file found"
 
 info "Validating .env..."
 
-if grep -qEi '^JWT_SECRET\s*=\s*(changeme|change_me|placeholder|default|secret|YOUR_JWT_SECRET|CHANGE_ME)\s*$' .env 2>/dev/null || \
+if grep -qEi '^JWT_SECRET\s*=\s*(changeme|change_me|placeholder|default|secret|YOUR_JWT_SECRET|CHANGE_ME)' .env 2>/dev/null || \
    ! grep -qE '^JWT_SECRET\s*=\s*[^\s#]+' .env 2>/dev/null; then
     error "JWT_SECRET is not set or is using a placeholder value in .env"
     exit 1
