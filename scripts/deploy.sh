@@ -82,13 +82,19 @@ info ".env file found"
 
 info "Validating .env..."
 
-if grep -qE '^JWT_SECRET\s*=\s*(changeme|change_me|placeholder|default|secret|YOUR_JWT_SECRET)\s*$' .env 2>/dev/null || \
+if grep -qEi '^JWT_SECRET\s*=\s*(changeme|change_me|placeholder|default|secret|YOUR_JWT_SECRET|CHANGE_ME)\s*$' .env 2>/dev/null || \
    ! grep -qE '^JWT_SECRET\s*=\s*[^\s#]+' .env 2>/dev/null; then
     error "JWT_SECRET is not set or is using a placeholder value in .env"
     exit 1
 fi
 info "JWT_SECRET OK"
 
+# Reject placeholders first
+if grep -qEi 'YOUR|PLACEHOLDER|EXAMPLE' .env 2>/dev/null; then
+    error "OPENAI_API_KEY appears to be a placeholder in .env"
+    exit 1
+fi
+# Then validate format
 if ! grep -qE '^OPENAI_API_KEY\s*=\s*sk-[a-zA-Z0-9_-]{20,}' .env 2>/dev/null; then
     error "OPENAI_API_KEY is missing or invalid in .env"
     exit 1
