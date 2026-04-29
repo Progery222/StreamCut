@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     app_base_url: str = "http://localhost"
     cleanup_interval_hours: int = 1
     file_max_age_hours: int = 24
+    delete_source_after_processing: bool = True
     groq_api_key: str = ""
     gemini_api_key: str = ""
     transcription_provider: str = "openai"  # openai or groq

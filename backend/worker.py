@@ -167,6 +167,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             logger.info(f"[{job_id}] Используем готовый файл: {video_path}")
             done_steps.append("download")
         else:
+
             def on_download_progress(percent):
                 mapped = 2 + int(percent * 0.18)  # 2-20%
                 update_job_state(
@@ -409,7 +410,9 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             file_size = final_path.stat().st_size if final_path.exists() else 0
 
             storage_key = f"processed/{job_id}/{output_filename}"
-            video_url = storage.upload(final_path, storage_key) if storage.enabled else f"/storage/{job_id}/{output_filename}"
+            video_url = (
+                storage.upload(final_path, storage_key) if storage.enabled else f"/storage/{job_id}/{output_filename}"
+            )
 
             return {
                 "index": i + 1,
@@ -444,8 +447,18 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         shorts.sort(key=lambda x: x["index"])
 
         done_steps.extend(["cut", "reframe", "render"])
-        if not skip_download:
-            video_path.unlink(missing_ok=True)
+        if not skip_download and settings.delete_source_after_processing:
+            if video_path.exists():
+                video_path.unlink(missing_ok=True)
+                logger.info(f"[{job_id}] Source video deleted: {video_path}")
+
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+            for ext in ["mp4", "mkv", "webm", "avi"]:
+                cache_file = settings.downloads_path / f"{url_hash}.{ext}"
+                if cache_file.exists():
+                    cache_file.unlink(missing_ok=True)
+                    logger.info(f"[{job_id}] Cache file deleted: {cache_file}")
+                    break
 
         # === ШАГ 6: Публикация (если запрошена) ===
         publish_targets = options.get("publish_targets") or []
