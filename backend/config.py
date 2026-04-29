@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from pathlib import Path
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     transcription_provider: str = "openai"  # openai or groq
     analyzer_provider: str = "openai"  # openai, gemini or ollama
+    analyzer_openai_model: str = "gpt-4o-mini"
+    analyzer_gemini_model: str = "gemini-2.0-flash"
     ollama_base_url: str = "http://localhost:11434/v1"
     ollama_model: str = "gemma4"
     r2_endpoint: str = ""

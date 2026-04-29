@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 FootageLayout = Literal["none", "background", "footage_top", "footage_bottom"]
 CaptionPosition = Literal["auto", "fixed_bottom"]
+OutputMode = Literal["shorts", "posts", "both"]
 
 
 class JobStatus(str, Enum):
@@ -34,6 +35,7 @@ class CreateJobRequest(BaseModel):
     add_watermark: bool = True  # add rumble.com watermark to video
     srt_timecodes: list[dict] | None = None  # [{start, end, title?}]
     publish_targets: list[str] | None = None
+    output_mode: OutputMode = "shorts"
 
 
 class CreateBatchRequest(BaseModel):
@@ -50,6 +52,7 @@ class CreateBatchRequest(BaseModel):
     caption_position: CaptionPosition = "auto"
     add_watermark: bool = True
     publish_targets: list[str] | None = None
+    output_mode: OutputMode = "shorts"
 
 
 class BatchResponse(BaseModel):
@@ -65,6 +68,14 @@ class StepInfo(BaseModel):
     detail: str | None = None
 
 
+class PostItem(BaseModel):
+    type: Literal["meaningful", "trigger", "bite"]
+    content: str
+    char_count: int
+    platform: str
+    moment_title: str | None = None
+
+
 class JobResponse(BaseModel):
     job_id: str
     status: JobStatus
@@ -72,6 +83,7 @@ class JobResponse(BaseModel):
     progress: int = 0
     steps: list[dict] | None = None
     shorts: list[dict] | None = None
+    posts: list[PostItem] | None = None
     error: str | None = None
 
 
