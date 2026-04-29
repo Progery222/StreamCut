@@ -7,6 +7,7 @@ from auth import get_current_user
 from config import settings
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from models.schemas import BatchResponse, CreateBatchRequest, CreateJobRequest, JobResponse, JobStatus
 from routers.auth import router as auth_router
@@ -97,6 +98,7 @@ async def create_job(request: CreateJobRequest, username: str = Depends(get_curr
                 "add_watermark": request.add_watermark,
                 "srt_timecodes": request.srt_timecodes,
                 "publish_targets": request.publish_targets,
+                "output_mode": request.output_mode,
                 "username": username,
             },
         ],
@@ -134,6 +136,7 @@ async def create_batch(request: CreateBatchRequest, username: str = Depends(get_
         "caption_position": request.caption_position,
         "add_watermark": request.add_watermark,
         "publish_targets": request.publish_targets,
+        "output_mode": request.output_mode,
         "username": username,
     }
 
@@ -193,6 +196,7 @@ async def get_batch(batch_id: str, username: str = Depends(get_current_user)):
                 progress=data.get("progress", 0),
                 steps=data.get("steps"),
                 shorts=data.get("shorts"),
+                posts=data.get("posts"),
                 error=data.get("error"),
             )
         )
@@ -219,6 +223,7 @@ async def list_jobs(username: str = Depends(get_current_user)):
                         progress=data.get("progress", 0),
                         steps=data.get("steps"),
                         shorts=data.get("shorts"),
+                        posts=data.get("posts"),
                         error=data.get("error"),
                     )
                 )
@@ -244,7 +249,48 @@ async def get_job(job_id: str, username: str = Depends(get_current_user)):
         progress=data.get("progress", 0),
         steps=data.get("steps"),
         shorts=data.get("shorts"),
+        posts=data.get("posts"),
         error=data.get("error"),
+    )
+
+
+@app.get("/jobs/{job_id}/posts-txt")
+async def download_posts_txt(job_id: str, username: str = Depends(get_current_user)):
+    owner = redis_client.get(f"job:{job_id}:owner")
+    if owner and owner.decode() != username:
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
+    raw = redis_client.get(f"job:{job_id}:state")
+    if not raw:
+        raise HTTPException(status_code=404, detail="Задача не найдена")
+
+    data = json.loads(raw)
+    posts = data.get("posts")
+    if not posts:
+        raise HTTPException(status_code=404, detail="Посты не найдены")
+
+    lines = []
+    for post in posts:
+        post_type = post.get("type", "")
+        platform = post.get("platform", "")
+        content = post.get("content", "")
+        if post_type == "meaningful":
+            header = "=== Смысловой пост (Threads) ==="
+        elif post_type == "trigger":
+            header = "=== Триггерный пост (X) ==="
+        elif post_type == "bite":
+            header = "=== Байтный пост (X) ==="
+        else:
+            header = f"=== {post_type} ({platform}) ==="
+        lines.append(header)
+        lines.append(content)
+        lines.append("")
+
+    text = "\n".join(lines)
+    return PlainTextResponse(
+        text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="posts-{job_id}.txt"'},
     )
 
 
@@ -346,7 +392,7 @@ async def download_video(url: str):
             background=None,
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
 
 
 @app.get("/video-info")
@@ -363,4 +409,4 @@ async def get_video_info(url: str):
             "uploader": info.get("uploader"),
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None

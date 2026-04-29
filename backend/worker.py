@@ -9,12 +9,15 @@ import redis as redis_lib
 from celery import Celery
 from celery.schedules import crontab
 from config import settings
+from models.schemas import PostItem, TranscriptSegment
 from services.analyzer import MomentAnalyzer
 from services.caption_renderer import CaptionRenderer
 from services.cutter import VideoCutter
 from services.downloader import VideoDownloader
 from services.footage_library import FootageLibrary
+from services.post_generator import PostGenerator
 from services.reframer import SmartReframer
+from services.subtitle_extractor import SubtitleExtractor
 from services.transcriber import AudioTranscriber
 from utils.helpers import cleanup_old_files
 
@@ -78,11 +81,31 @@ STEPS = [
     {"id": "publish", "label": "Публикация"},
 ]
 
+SHORTS_STEPS = STEPS
 
-def _build_steps(active_id: str, detail: str = None, done_ids: list = None) -> list:
+POSTS_STEPS = [
+    {"id": "download", "label": "Скачивание видео"},
+    {"id": "transcribe", "label": "Транскрипция аудио"},
+    {"id": "generate_posts", "label": "Генерация постов"},
+]
+
+BOTH_STEPS = [
+    {"id": "download", "label": "Скачивание видео"},
+    {"id": "transcribe", "label": "Транскрипция аудио"},
+    {"id": "analyze", "label": "AI-анализ моментов"},
+    {"id": "generate_posts", "label": "Генерация постов"},
+    {"id": "cut", "label": "Нарезка шортсов"},
+    {"id": "reframe", "label": "AI рефрейминг"},
+    {"id": "render", "label": "Рендеринг субтитров"},
+    {"id": "publish", "label": "Публикация"},
+]
+
+
+def _build_steps(active_id: str, detail: str = None, done_ids: list = None, steps: list = None) -> list:
+    steps = steps or STEPS
     done_ids = done_ids or []
     result = []
-    for s in STEPS:
+    for s in steps:
         if s["id"] in done_ids:
             result.append({**s, "status": "done"})
         elif s["id"] == active_id:
@@ -102,6 +125,17 @@ def update_job_state(job_id: str, status: str, progress: int, message: str, **kw
     _redis.setex(f"job:{job_id}:state", 86400, json.dumps(data))
 
 
+def _write_posts_to_state(job_id: str, posts: list[PostItem]):
+    key = f"job:{job_id}:state"
+    raw = _redis.get(key)
+    if raw:
+        data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+    else:
+        data = {}
+    data["posts"] = [p.model_dump() for p in posts]
+    _redis.setex(key, 86400, json.dumps(data))
+
+
 @celery_app.task(bind=True, name="process_video")
 def process_video(self, job_id: str, url: str, options: dict):
     loop = asyncio.new_event_loop()
@@ -114,41 +148,21 @@ def process_video(self, job_id: str, url: str, options: dict):
 
 
 async def _process_video_async(job_id: str, url: str, options: dict):
+    output_mode = options.get("output_mode", "shorts")
+    if output_mode == "posts":
+        return await _pipeline_posts(job_id, url, options)
+    if output_mode == "both":
+        return await _pipeline_both(job_id, url, options)
+    return await _pipeline_shorts(job_id, url, options)
+
+
+async def _pipeline_shorts(job_id: str, url: str, options: dict):
     downloader = VideoDownloader(settings.downloads_path)
     transcriber = AudioTranscriber(settings.whisper_model)
     analyzer = MomentAnalyzer()
-    cutter = VideoCutter(settings.temp_path, settings.processed_path)
-    renderer = CaptionRenderer()
-    reframe_mode = options.get("reframe_mode", "center")
-    reframer = SmartReframer() if reframe_mode == "ai" else None
-
-    footage_layout = options.get("footage_layout", "none") or "none"
-    footage_category = options.get("footage_category")
-    caption_position = options.get("caption_position", "auto") or "auto"
-    add_watermark = options.get("add_watermark", True)
-    footage_library: FootageLibrary | None = None
-    # Session ID groups all clips from one generation (or one batch) so they share
-    # the anti-duplication set in Redis. Batch → batch_id wins; otherwise → job_id.
-    footage_session_id = _redis.get(f"job:{job_id}:batch")
-    if footage_session_id is None:
-        footage_session_id = job_id
-    else:
-        footage_session_id = (
-            footage_session_id.decode() if isinstance(footage_session_id, bytes) else footage_session_id
-        )
-    if footage_layout != "none":
-        footage_library = FootageLibrary(settings.footage_library_path).load()
-        if footage_library.is_empty():
-            raise RuntimeError(
-                f"footage_layout={footage_layout!r} requested, but footage library is empty. "
-                "Run `python -m scripts.prepare_footage --source-dir storage/adhd_cut` first."
-            )
-        logger.info(
-            f"[{job_id}] Footage library loaded: layout={footage_layout}, "
-            f"category={footage_category or '(any)'}, session={footage_session_id[:8]}…"
-        )
-
+    subtitle_extractor = SubtitleExtractor()
     done_steps = []
+    steps = SHORTS_STEPS
 
     try:
         # === ШАГ 1: Скачивание (или использование готового файла) ===
@@ -162,7 +176,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 "downloading",
                 20,
                 "Используем готовый файл",
-                steps=_build_steps("download", "Готовый файл ✓", done_steps),
+                steps=_build_steps("download", "Готовый файл ✓", done_steps, steps),
             )
             logger.info(f"[{job_id}] Используем готовый файл: {video_path}")
             done_steps.append("download")
@@ -175,7 +189,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                     "downloading",
                     mapped,
                     f"Скачивание видео... {percent}%",
-                    steps=_build_steps("download", f"{percent}%", done_steps),
+                    steps=_build_steps("download", f"{percent}%", done_steps, steps),
                 )
 
             update_job_state(
@@ -183,7 +197,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 "downloading",
                 2,
                 "Скачивание видео...",
-                steps=_build_steps("download", "Подготовка...", done_steps),
+                steps=_build_steps("download", "Подготовка...", done_steps, steps),
             )
             logger.info(f"[{job_id}] Скачивание: {url}")
 
@@ -205,52 +219,71 @@ async def _process_video_async(job_id: str, url: str, options: dict):
         from services.storage import storage
 
         segments = None
-        # Try local cache first, then MinIO
-        cached_data = None
-        if cache_file.exists():
-            cached_data = cache_file.read_text(encoding="utf-8")
-        elif storage.enabled:
-            raw = storage.download_bytes(cache_s3_key)
-            if raw:
-                cached_data = raw.decode("utf-8")
-
-        if cached_data:
-            try:
-                from models.schemas import TranscriptSegment
-
-                cached = json.loads(cached_data)
-                segments = [TranscriptSegment(**s) for s in cached]
-                logger.info(f"[{job_id}] Транскрипция из кэша: {len(segments)} сегментов")
-                update_job_state(
-                    job_id,
-                    "transcribing",
-                    44,
-                    f"Транскрипция из кэша: {len(segments)} сегментов",
-                    steps=_build_steps("transcribe", "Из кэша ✓", done_steps),
-                )
-            except Exception as e:
-                logger.warning(f"[{job_id}] Ошибка чтения кэша: {e}")
-                segments = None
-
-        if segments is None:
+        # Try subtitle extraction first
+        if url:
             update_job_state(
                 job_id,
                 "transcribing",
                 22,
-                "Транскрипция аудио...",
-                steps=_build_steps("transcribe", "Whisper обрабатывает...", done_steps),
+                "Попытка извлечь субтитры...",
+                steps=_build_steps("transcribe", "Извлечение субтитров...", done_steps, steps),
             )
-            logger.info(f"[{job_id}] Транскрипция...")
-            segments = await transcriber.transcribe(video_path, language)
+            segments = await subtitle_extractor.extract(url, language if language != "auto" else "en")
+            if segments:
+                logger.info(f"[{job_id}] Субтитры извлечены: {len(segments)} сегментов")
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    44,
+                    f"Субтитры: {len(segments)} сегментов",
+                    steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
+                )
 
-            try:
-                cache_json = json.dumps([s.model_dump() for s in segments], ensure_ascii=False)
-                cache_file.write_text(cache_json, encoding="utf-8")
-                if storage.enabled:
-                    storage.upload_bytes(cache_json.encode("utf-8"), cache_s3_key)
-                logger.info(f"[{job_id}] Транскрипция сохранена в кэш")
-            except Exception as e:
-                logger.warning(f"[{job_id}] Не удалось сохранить кэш: {e}")
+        # If subtitles failed, try cache then Whisper
+        if segments is None:
+            cached_data = None
+            if cache_file.exists():
+                cached_data = cache_file.read_text(encoding="utf-8")
+            elif storage.enabled:
+                raw = storage.download_bytes(cache_s3_key)
+                if raw:
+                    cached_data = raw.decode("utf-8")
+
+            if cached_data:
+                try:
+                    cached = json.loads(cached_data)
+                    segments = [TranscriptSegment(**s) for s in cached]
+                    logger.info(f"[{job_id}] Транскрипция из кэша: {len(segments)} сегментов")
+                    update_job_state(
+                        job_id,
+                        "transcribing",
+                        44,
+                        f"Транскрипция из кэша: {len(segments)} сегментов",
+                        steps=_build_steps("transcribe", "Из кэша ✓", done_steps, steps),
+                    )
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Ошибка чтения кэша: {e}")
+                    segments = None
+
+            if segments is None:
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    22,
+                    "Транскрипция аудио...",
+                    steps=_build_steps("transcribe", "Whisper обрабатывает...", done_steps, steps),
+                )
+                logger.info(f"[{job_id}] Транскрипция...")
+                segments = await transcriber.transcribe(video_path, language)
+
+                try:
+                    cache_json = json.dumps([s.model_dump() for s in segments], ensure_ascii=False)
+                    cache_file.write_text(cache_json, encoding="utf-8")
+                    if storage.enabled:
+                        storage.upload_bytes(cache_json.encode("utf-8"), cache_s3_key)
+                    logger.info(f"[{job_id}] Транскрипция сохранена в кэш")
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Не удалось сохранить кэш: {e}")
 
         done_steps.append("transcribe")
         logger.info(f"[{job_id}] Транскрипция: {len(segments)} сегментов")
@@ -263,13 +296,12 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             "transcribing",
             44,
             f"Транскрипция завершена: {len(segments)} сегментов",
-            steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps),
+            steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
         )
 
         # === ШАГ 3: Анализ моментов ===
         srt_timecodes = options.get("srt_timecodes")
         if srt_timecodes:
-            # Ручные таймкоды из SRT — пропускаем AI анализ
             from models.schemas import VideoMoment
 
             moments = []
@@ -288,7 +320,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 "analyzing",
                 55,
                 f"Использованы SRT таймкоды: {len(moments)} клипов",
-                steps=_build_steps("analyze", f"{len(moments)} из SRT", done_steps),
+                steps=_build_steps("analyze", f"{len(moments)} из SRT", done_steps, steps),
             )
             logger.info(f"[{job_id}] SRT таймкоды: {len(moments)} клипов")
         else:
@@ -297,7 +329,7 @@ async def _process_video_async(job_id: str, url: str, options: dict):
                 "analyzing",
                 46,
                 "AI анализирует лучшие моменты...",
-                steps=_build_steps("analyze", "GPT-4o-mini думает...", done_steps),
+                steps=_build_steps("analyze", "GPT-4o-mini думает...", done_steps, steps),
             )
             logger.info(f"[{job_id}] Анализ моментов...")
 
@@ -315,206 +347,15 @@ async def _process_video_async(job_id: str, url: str, options: dict):
 
         logger.info(f"[{job_id}] Выбрано {len(moments)} моментов")
 
-        # === ШАГ 4-5: Параллельная нарезка и рендеринг ===
-        job_output_dir = settings.processed_path / job_id
-        job_output_dir.mkdir(exist_ok=True)
-
-        total_moments = len(moments)
-        caption_style = options.get("caption_style", "default")
-        add_music = options.get("add_music", "none")
-        completed_count = [0]
-
-        async def process_clip(i, moment):
-            logger.info(f"[{job_id}] Шортс {i + 1}: {moment.start:.1f}s - {moment.end:.1f}s")
-
-            clip_path = settings.temp_path / f"{job_id}_clip_{i}.mp4"
-            await cutter.cut_clip(video_path, moment.start, moment.end, clip_path)
-
-            vertical_path = settings.temp_path / f"{job_id}_vertical_{i}.mp4"
-
-            if footage_library is not None:
-                clip_dur = moment.end - moment.start
-                footage_path = footage_library.pick(
-                    duration=clip_dur,
-                    category=footage_category,
-                    session_id=footage_session_id,
-                    redis_client=_redis,
-                    seed=hash((job_id, i)),
-                )
-                logger.info(f"[{job_id}] Clip {i + 1}: footage layout={footage_layout!r} footage={footage_path.name}")
-                await cutter.convert_to_vertical_with_footage(
-                    clip_path,
-                    vertical_path,
-                    layout=footage_layout,
-                    footage=footage_path,
-                )
-            elif reframer:
-                clip_w, clip_h = await cutter._get_video_dimensions(clip_path)
-                if clip_h < clip_w:
-                    loop = asyncio.get_event_loop()
-                    is_th = await loop.run_in_executor(None, reframer.is_talking_head, clip_path)
-                    if is_th:
-                        logger.info(f"[{job_id}] Clip {i + 1}: talking head")
-                        await cutter.convert_to_vertical_fit(clip_path, vertical_path)
-                    else:
-                        face_box = await loop.run_in_executor(None, reframer.detect_face_region, clip_path)
-                        if face_box:
-                            logger.info(f"[{job_id}] Clip {i + 1}: split-screen")
-                            await cutter.convert_to_vertical_split(clip_path, vertical_path, face_box, clip_w, clip_h)
-                        else:
-                            logger.info(f"[{job_id}] Clip {i + 1}: smart crop")
-                            keyframes = await reframer.compute_crop_trajectory(clip_path, clip_w, clip_h)
-                            crop_filter = reframer.generate_crop_filter(keyframes, clip_w, clip_h)
-                            await cutter.convert_to_vertical_smart(clip_path, vertical_path, crop_filter)
-                else:
-                    await cutter.convert_to_vertical(clip_path, vertical_path)
-            else:
-                await cutter.convert_to_vertical(clip_path, vertical_path)
-
-            output_filename = f"short_{i + 1}_{_safe_filename(moment.title)}.mp4"
-            final_path = job_output_dir / output_filename
-
-            clip_segments = [s for s in segments if s.end > moment.start - 0.1 and s.start < moment.end + 0.1]
-
-            # Авто-подбор музыки по настроению клипа
-            clip_music = add_music
-            if add_music == "auto" and moment.mood:
-                clip_music = moment.mood
-
-            await renderer.render_captions(
-                video_path=vertical_path,
-                segments=clip_segments,
-                output_path=final_path,
-                style=caption_style,
-                video_start=moment.start,
-                add_music=clip_music,
-                hook_text=moment.hook,
-                footage_layout=footage_layout,
-                caption_position=caption_position,
-                add_watermark=add_watermark,
-            )
-
-            clip_path.unlink(missing_ok=True)
-            vertical_path.unlink(missing_ok=True)
-
-            completed_count[0] += 1
-            pct = 55 + int((completed_count[0] / total_moments) * 40)
-            update_job_state(
-                job_id,
-                "rendering",
-                pct,
-                f"Готово {completed_count[0]}/{total_moments} шортсов",
-                steps=_build_steps("render", f"{completed_count[0]}/{total_moments}", done_steps + ["cut", "reframe"]),
-            )
-
-            file_size = final_path.stat().st_size if final_path.exists() else 0
-
-            storage_key = f"processed/{job_id}/{output_filename}"
-            video_url = (
-                storage.upload(final_path, storage_key) if storage.enabled else f"/storage/{job_id}/{output_filename}"
-            )
-
-            return {
-                "index": i + 1,
-                "title": moment.title,
-                "description": moment.description,
-                "score": moment.score,
-                "start": moment.start,
-                "end": moment.end,
-                "duration": round(moment.end - moment.start, 1),
-                "filename": output_filename,
-                "url": video_url,
-                "file_size": file_size,
-            }
-
-        update_job_state(
-            job_id,
-            "cutting",
-            55,
-            f"Обработка {total_moments} клипов параллельно...",
-            steps=_build_steps("cut", f"0/{total_moments}", done_steps),
-        )
-
-        # Параллельная обработка (до 3 одновременно)
-        semaphore = asyncio.Semaphore(3)
-
-        async def limited_process(i, moment):
-            async with semaphore:
-                return await process_clip(i, moment)
-
-        results = await asyncio.gather(*[limited_process(i, m) for i, m in enumerate(moments)])
-        shorts = list(results)
-        shorts.sort(key=lambda x: x["index"])
-
-        done_steps.extend(["cut", "reframe", "render"])
-        if not skip_download and settings.delete_source_after_processing:
-            if video_path.exists():
-                video_path.unlink(missing_ok=True)
-                logger.info(f"[{job_id}] Source video deleted: {video_path}")
-
-            url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-            for ext in ["mp4", "mkv", "webm", "avi"]:
-                cache_file = settings.downloads_path / f"{url_hash}.{ext}"
-                if cache_file.exists():
-                    cache_file.unlink(missing_ok=True)
-                    logger.info(f"[{job_id}] Cache file deleted: {cache_file}")
-                    break
-
-        # === ШАГ 6: Публикация (если запрошена) ===
-        publish_targets = options.get("publish_targets") or []
-        if publish_targets:
-            username = options.get("username", "")
-            update_job_state(
-                job_id,
-                "publishing",
-                95,
-                "Публикация шортсов...",
-                steps=_build_steps("publish", "Загрузка...", done_steps),
-                shorts=shorts,
-            )
-
-            from services.publisher import TikTokPublisher, YouTubePublisher
-            from services.token_encryption import decrypt_tokens
-
-            publishers = {}
-            for target in publish_targets:
-                raw = _redis.get(f"oauth:{username}:{target}")
-                if not raw:
-                    logger.warning(f"[{job_id}] Нет токена для {target}, пропуск")
-                    continue
-                token_data = decrypt_tokens(raw.decode())
-                if target == "youtube":
-                    publishers["youtube"] = (YouTubePublisher(), token_data)
-                elif target == "tiktok":
-                    publishers["tiktok"] = (TikTokPublisher(), token_data)
-
-            for i, short in enumerate(shorts):
-                final_path = job_output_dir / short["filename"]
-                published = {}
-                for target, (pub, tokens) in publishers.items():
-                    try:
-                        pub_url = await pub.upload(
-                            tokens,
-                            final_path,
-                            title=short["title"],
-                            description=short.get("description", ""),
-                        )
-                        published[target] = pub_url
-                        logger.info(f"[{job_id}] Опубликован {target}: {pub_url}")
-                    except Exception as pub_err:
-                        logger.error(f"[{job_id}] Ошибка публикации {target}: {pub_err}")
-                        published[target] = f"error: {pub_err}"
-
-                shorts[i]["published"] = published
-
-            done_steps.append("publish")
+        # === ШАГ 4-6: Нарезка, рефрейминг, рендеринг ===
+        shorts = await _render_shorts(job_id, url, video_path, moments, segments, options, done_steps, steps)
 
         update_job_state(
             job_id,
             "done",
             100,
             f"Готово! Создано {len(shorts)} шортсов",
-            steps=_build_steps("done", None, done_steps),
+            steps=_build_steps("done", None, done_steps, steps),
             shorts=shorts,
         )
         logger.info(f"[{job_id}] Готово! {len(shorts)} шортсов")
@@ -529,9 +370,683 @@ async def _process_video_async(job_id: str, url: str, options: dict):
             0,
             f"Ошибка: {str(e)}",
             error=str(e),
-            steps=_build_steps("error", str(e), done_steps),
+            steps=_build_steps("error", str(e), done_steps, steps),
         )
         raise
+
+
+async def _pipeline_posts(job_id: str, url: str, options: dict):
+    transcriber = AudioTranscriber(settings.whisper_model)
+    post_generator = PostGenerator()
+    subtitle_extractor = SubtitleExtractor()
+    done_steps = []
+    steps = POSTS_STEPS
+
+    try:
+        skip_download = options.get("skip_download", False)
+        provided_video_path = options.get("video_path")
+        language = options.get("language", "auto")
+
+        # === ШАГ 1-2: Транскрипция (субтитры → кэш → Whisper) ===
+        segments = None
+        video_path = None
+
+        # Try subtitle extraction first
+        if url:
+            update_job_state(
+                job_id,
+                "transcribing",
+                22,
+                "Попытка извлечь субтитры...",
+                steps=_build_steps("transcribe", "Извлечение субтитров...", done_steps, steps),
+            )
+            segments = await subtitle_extractor.extract(url, language if language != "auto" else "en")
+            if segments:
+                logger.info(f"[{job_id}] Субтитры извлечены: {len(segments)} сегментов")
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    44,
+                    f"Субтитры: {len(segments)} сегментов",
+                    steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
+                )
+
+        if segments is None:
+            # Need video for Whisper
+            if skip_download and provided_video_path:
+                video_path = Path(provided_video_path)
+                update_job_state(
+                    job_id,
+                    "downloading",
+                    20,
+                    "Используем готовый файл",
+                    steps=_build_steps("download", "Готовый файл ✓", done_steps, steps),
+                )
+                logger.info(f"[{job_id}] Используем готовый файл: {video_path}")
+                done_steps.append("download")
+            else:
+                downloader = VideoDownloader(settings.downloads_path)
+
+                def on_download_progress(percent):
+                    mapped = 2 + int(percent * 0.18)
+                    update_job_state(
+                        job_id,
+                        "downloading",
+                        mapped,
+                        f"Скачивание видео... {percent}%",
+                        steps=_build_steps("download", f"{percent}%", done_steps, steps),
+                    )
+
+                update_job_state(
+                    job_id,
+                    "downloading",
+                    2,
+                    "Скачивание видео...",
+                    steps=_build_steps("download", "Подготовка...", done_steps, steps),
+                )
+                logger.info(f"[{job_id}] Скачивание: {url}")
+
+                video_path = await downloader.download(
+                    url=url,
+                    job_id=job_id,
+                    max_duration=settings.max_video_duration,
+                    progress_callback=on_download_progress,
+                )
+                done_steps.append("download")
+                logger.info(f"[{job_id}] Видео скачано: {video_path}")
+
+            # Check cache
+            cache_key = hashlib.md5(f"{url}:{language}".encode()).hexdigest()
+            cache_file = settings.cache_path / f"{cache_key}.json"
+            cache_s3_key = f"cache/{cache_key}.json"
+
+            from services.storage import storage
+
+            cached_data = None
+            if cache_file.exists():
+                cached_data = cache_file.read_text(encoding="utf-8")
+            elif storage.enabled:
+                raw = storage.download_bytes(cache_s3_key)
+                if raw:
+                    cached_data = raw.decode("utf-8")
+
+            if cached_data:
+                try:
+                    cached = json.loads(cached_data)
+                    segments = [TranscriptSegment(**s) for s in cached]
+                    logger.info(f"[{job_id}] Транскрипция из кэша: {len(segments)} сегментов")
+                    update_job_state(
+                        job_id,
+                        "transcribing",
+                        44,
+                        f"Транскрипция из кэша: {len(segments)} сегментов",
+                        steps=_build_steps("transcribe", "Из кэша ✓", done_steps, steps),
+                    )
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Ошибка чтения кэша: {e}")
+                    segments = None
+
+            if segments is None:
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    22,
+                    "Транскрипция аудио...",
+                    steps=_build_steps("transcribe", "Whisper обрабатывает...", done_steps, steps),
+                )
+                logger.info(f"[{job_id}] Транскрипция...")
+                segments = await transcriber.transcribe(video_path, language)
+
+                try:
+                    cache_json = json.dumps([s.model_dump() for s in segments], ensure_ascii=False)
+                    cache_file.write_text(cache_json, encoding="utf-8")
+                    if storage.enabled:
+                        storage.upload_bytes(cache_json.encode("utf-8"), cache_s3_key)
+                    logger.info(f"[{job_id}] Транскрипция сохранена в кэш")
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Не удалось сохранить кэш: {e}")
+        else:
+            # Subtitles succeeded — no download needed, mark as done
+            update_job_state(
+                job_id,
+                "downloading",
+                20,
+                "Скачивание не требуется",
+                steps=_build_steps("download", "Субтитры доступны ✓", done_steps, steps),
+            )
+            done_steps.append("download")
+
+        done_steps.append("transcribe")
+        logger.info(f"[{job_id}] Транскрипция: {len(segments)} сегментов")
+
+        if not segments:
+            raise ValueError("Транскрипция не дала результатов. Возможно, видео без речи.")
+
+        update_job_state(
+            job_id,
+            "transcribing",
+            44,
+            f"Транскрипция завершена: {len(segments)} сегментов",
+            steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
+        )
+
+        # === ШАГ 3: Генерация постов ===
+        update_job_state(
+            job_id,
+            "analyzing",
+            55,
+            "Генерация постов...",
+            steps=_build_steps("generate_posts", "GPT-4o-mini пишет...", done_steps, steps),
+        )
+        logger.info(f"[{job_id}] Генерация постов...")
+        posts = await post_generator.generate_posts(segments, moments=None)
+        done_steps.append("generate_posts")
+
+        update_job_state(
+            job_id,
+            "done",
+            100,
+            f"Готово! Создано {len(posts)} постов",
+            steps=_build_steps("done", None, done_steps, steps),
+            posts=posts,
+        )
+        logger.info(f"[{job_id}] Готово! {len(posts)} постов")
+
+        return {"status": "done", "posts": posts}
+
+    except Exception as e:
+        logger.error(f"[{job_id}] Ошибка: {e}", exc_info=True)
+        update_job_state(
+            job_id,
+            "error",
+            0,
+            f"Ошибка: {str(e)}",
+            error=str(e),
+            steps=_build_steps("error", str(e), done_steps, steps),
+        )
+        raise
+
+
+async def _pipeline_both(job_id: str, url: str, options: dict):
+    downloader = VideoDownloader(settings.downloads_path)
+    transcriber = AudioTranscriber(settings.whisper_model)
+    analyzer = MomentAnalyzer()
+    post_generator = PostGenerator()
+    subtitle_extractor = SubtitleExtractor()
+    done_steps = []
+    steps = BOTH_STEPS
+
+    try:
+        skip_download = options.get("skip_download", False)
+        provided_video_path = options.get("video_path")
+        language = options.get("language", "auto")
+
+        # === ШАГ 1: Параллельное скачивание и извлечение субтитров ===
+        segments = None
+        video_path = None
+
+        if skip_download and provided_video_path:
+            video_path = Path(provided_video_path)
+            update_job_state(
+                job_id,
+                "downloading",
+                20,
+                "Используем готовый файл",
+                steps=_build_steps("download", "Готовый файл ✓", done_steps, steps),
+            )
+            logger.info(f"[{job_id}] Используем готовый файл: {video_path}")
+            done_steps.append("download")
+            segments = await subtitle_extractor.extract(url, language if language != "auto" else "en")
+            if segments:
+                logger.info(f"[{job_id}] Субтитры извлечены: {len(segments)} сегментов")
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    44,
+                    f"Субтитры: {len(segments)} сегментов",
+                    steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
+                )
+        else:
+
+            def on_download_progress(percent):
+                mapped = 2 + int(percent * 0.18)
+                update_job_state(
+                    job_id,
+                    "downloading",
+                    mapped,
+                    f"Скачивание видео... {percent}%",
+                    steps=_build_steps("download", f"{percent}%", done_steps, steps),
+                )
+
+            update_job_state(
+                job_id,
+                "downloading",
+                2,
+                "Скачивание видео...",
+                steps=_build_steps("download", "Подготовка...", done_steps, steps),
+            )
+            logger.info(f"[{job_id}] Скачивание: {url}")
+
+            async def _download():
+                return await downloader.download(
+                    url=url,
+                    job_id=job_id,
+                    max_duration=settings.max_video_duration,
+                    progress_callback=on_download_progress,
+                )
+
+            async def _extract_subs():
+                return await subtitle_extractor.extract(url, language if language != "auto" else "en")
+
+            video_path, segments = await asyncio.gather(_download(), _extract_subs())
+            done_steps.append("download")
+            if segments:
+                logger.info(f"[{job_id}] Субтитры извлечены: {len(segments)} сегментов")
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    44,
+                    f"Субтитры: {len(segments)} сегментов",
+                    steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
+                )
+
+        # === ШАГ 2: Транскрипция (кэш → Whisper, если субтитры не удались) ===
+        if segments is None:
+            cache_key = hashlib.md5(f"{url}:{language}".encode()).hexdigest()
+            cache_file = settings.cache_path / f"{cache_key}.json"
+            cache_s3_key = f"cache/{cache_key}.json"
+
+            from services.storage import storage
+
+            cached_data = None
+            if cache_file.exists():
+                cached_data = cache_file.read_text(encoding="utf-8")
+            elif storage.enabled:
+                raw = storage.download_bytes(cache_s3_key)
+                if raw:
+                    cached_data = raw.decode("utf-8")
+
+            if cached_data:
+                try:
+                    cached = json.loads(cached_data)
+                    segments = [TranscriptSegment(**s) for s in cached]
+                    logger.info(f"[{job_id}] Транскрипция из кэша: {len(segments)} сегментов")
+                    update_job_state(
+                        job_id,
+                        "transcribing",
+                        44,
+                        f"Транскрипция из кэша: {len(segments)} сегментов",
+                        steps=_build_steps("transcribe", "Из кэша ✓", done_steps, steps),
+                    )
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Ошибка чтения кэша: {e}")
+                    segments = None
+
+            if segments is None:
+                update_job_state(
+                    job_id,
+                    "transcribing",
+                    22,
+                    "Транскрипция аудио...",
+                    steps=_build_steps("transcribe", "Whisper обрабатывает...", done_steps, steps),
+                )
+                logger.info(f"[{job_id}] Транскрипция...")
+                segments = await transcriber.transcribe(video_path, language)
+
+                try:
+                    cache_json = json.dumps([s.model_dump() for s in segments], ensure_ascii=False)
+                    cache_file.write_text(cache_json, encoding="utf-8")
+                    if storage.enabled:
+                        storage.upload_bytes(cache_json.encode("utf-8"), cache_s3_key)
+                    logger.info(f"[{job_id}] Транскрипция сохранена в кэш")
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Не удалось сохранить кэш: {e}")
+
+        done_steps.append("transcribe")
+        logger.info(f"[{job_id}] Транскрипция: {len(segments)} сегментов")
+
+        if not segments:
+            raise ValueError("Транскрипция не дала результатов. Возможно, видео без речи.")
+
+        update_job_state(
+            job_id,
+            "transcribing",
+            44,
+            f"Транскрипция завершена: {len(segments)} сегментов",
+            steps=_build_steps("transcribe", f"{len(segments)} сегментов", done_steps, steps),
+        )
+
+        # === ШАГ 3: Анализ моментов ===
+        srt_timecodes = options.get("srt_timecodes")
+        if srt_timecodes:
+            from models.schemas import VideoMoment
+
+            moments = []
+            for i, tc in enumerate(srt_timecodes):
+                moments.append(
+                    VideoMoment(
+                        start=float(tc["start"]),
+                        end=float(tc["end"]),
+                        title=tc.get("title", f"Клип {i + 1}"),
+                        description="",
+                        score=10,
+                    )
+                )
+            update_job_state(
+                job_id,
+                "analyzing",
+                55,
+                f"Использованы SRT таймкоды: {len(moments)} клипов",
+                steps=_build_steps("analyze", f"{len(moments)} из SRT", done_steps, steps),
+            )
+            logger.info(f"[{job_id}] SRT таймкоды: {len(moments)} клипов")
+        else:
+            update_job_state(
+                job_id,
+                "analyzing",
+                46,
+                "AI анализирует лучшие моменты...",
+                steps=_build_steps("analyze", "GPT-4o-mini думает...", done_steps, steps),
+            )
+            logger.info(f"[{job_id}] Анализ моментов...")
+
+            moments = await analyzer.analyze(
+                segments=segments,
+                max_moments=options.get("max_shorts", settings.max_shorts),
+                min_duration=options.get("min_duration", settings.min_short_duration),
+                max_duration=options.get("max_duration", settings.max_short_duration),
+                video_path=video_path,
+            )
+        done_steps.append("analyze")
+
+        if not moments:
+            raise ValueError("Не удалось выделить интересные моменты из видео.")
+
+        logger.info(f"[{job_id}] Выбрано {len(moments)} моментов")
+
+        # === ШАГ 4-7: Параллельная генерация постов и рендеринг шортсов ===
+        async def _generate_posts_task():
+            update_job_state(
+                job_id,
+                "analyzing",
+                55,
+                "Генерация постов...",
+                steps=_build_steps("generate_posts", "GPT-4o-mini пишет...", done_steps, steps),
+            )
+            logger.info(f"[{job_id}] Генерация постов...")
+            posts = await post_generator.generate_posts(segments, moments)
+            _write_posts_to_state(job_id, posts)
+            done_steps.append("generate_posts")
+            return posts
+
+        posts, shorts = await asyncio.gather(
+            _generate_posts_task(),
+            _render_shorts(job_id, url, video_path, moments, segments, options, done_steps, steps),
+        )
+
+        update_job_state(
+            job_id,
+            "done",
+            100,
+            f"Готово! Создано {len(shorts)} шортсов и {len(posts)} постов",
+            steps=_build_steps("done", None, done_steps, steps),
+            shorts=shorts,
+            posts=posts,
+        )
+        logger.info(f"[{job_id}] Готово! {len(shorts)} шортсов и {len(posts)} постов")
+
+        return {"status": "done", "shorts": shorts, "posts": posts}
+
+    except Exception as e:
+        logger.error(f"[{job_id}] Ошибка: {e}", exc_info=True)
+        update_job_state(
+            job_id,
+            "error",
+            0,
+            f"Ошибка: {str(e)}",
+            error=str(e),
+            steps=_build_steps("error", str(e), done_steps, steps),
+        )
+        raise
+
+
+async def _render_shorts(
+    job_id: str,
+    url: str,
+    video_path: Path,
+    moments: list,
+    segments: list,
+    options: dict,
+    done_steps: list,
+    steps: list,
+) -> list:
+    cutter = VideoCutter(settings.temp_path, settings.processed_path)
+    renderer = CaptionRenderer()
+    reframe_mode = options.get("reframe_mode", "center")
+    reframer = SmartReframer() if reframe_mode == "ai" else None
+
+    footage_layout = options.get("footage_layout", "none") or "none"
+    footage_category = options.get("footage_category")
+    caption_position = options.get("caption_position", "auto") or "auto"
+    add_watermark = options.get("add_watermark", True)
+    footage_library = None
+    footage_session_id = _redis.get(f"job:{job_id}:batch")
+    if footage_session_id is None:
+        footage_session_id = job_id
+    else:
+        footage_session_id = (
+            footage_session_id.decode() if isinstance(footage_session_id, bytes) else footage_session_id
+        )
+    if footage_layout != "none":
+        footage_library = FootageLibrary(settings.footage_library_path).load()
+        if footage_library.is_empty():
+            raise RuntimeError(
+                f"footage_layout={footage_layout!r} requested, but footage library is empty. "
+                "Run `python -m scripts.prepare_footage --source-dir storage/adhd_cut` first."
+            )
+        logger.info(
+            f"[{job_id}] Footage library loaded: layout={footage_layout}, "
+            f"category={footage_category or '(any)'}, session={footage_session_id[:8]}…"
+        )
+
+    job_output_dir = settings.processed_path / job_id
+    job_output_dir.mkdir(exist_ok=True)
+
+    total_moments = len(moments)
+    caption_style = options.get("caption_style", "default")
+    add_music = options.get("add_music", "none")
+    completed_count = [0]
+
+    async def process_clip(i, moment):
+        logger.info(f"[{job_id}] Шортс {i + 1}: {moment.start:.1f}s - {moment.end:.1f}s")
+
+        clip_path = settings.temp_path / f"{job_id}_clip_{i}.mp4"
+        await cutter.cut_clip(video_path, moment.start, moment.end, clip_path)
+
+        vertical_path = settings.temp_path / f"{job_id}_vertical_{i}.mp4"
+
+        if footage_library is not None:
+            clip_dur = moment.end - moment.start
+            footage_path = footage_library.pick(
+                duration=clip_dur,
+                category=footage_category,
+                session_id=footage_session_id,
+                redis_client=_redis,
+                seed=hash((job_id, i)),
+            )
+            logger.info(f"[{job_id}] Clip {i + 1}: footage layout={footage_layout!r} footage={footage_path.name}")
+            await cutter.convert_to_vertical_with_footage(
+                clip_path,
+                vertical_path,
+                layout=footage_layout,
+                footage=footage_path,
+            )
+        elif reframer:
+            clip_w, clip_h = await cutter._get_video_dimensions(clip_path)
+            if clip_h < clip_w:
+                loop = asyncio.get_event_loop()
+                is_th = await loop.run_in_executor(None, reframer.is_talking_head, clip_path)
+                if is_th:
+                    logger.info(f"[{job_id}] Clip {i + 1}: talking head")
+                    await cutter.convert_to_vertical_fit(clip_path, vertical_path)
+                else:
+                    face_box = await loop.run_in_executor(None, reframer.detect_face_region, clip_path)
+                    if face_box:
+                        logger.info(f"[{job_id}] Clip {i + 1}: split-screen")
+                        await cutter.convert_to_vertical_split(clip_path, vertical_path, face_box, clip_w, clip_h)
+                    else:
+                        logger.info(f"[{job_id}] Clip {i + 1}: smart crop")
+                        keyframes = await reframer.compute_crop_trajectory(clip_path, clip_w, clip_h)
+                        crop_filter = reframer.generate_crop_filter(keyframes, clip_w, clip_h)
+                        await cutter.convert_to_vertical_smart(clip_path, vertical_path, crop_filter)
+            else:
+                await cutter.convert_to_vertical(clip_path, vertical_path)
+        else:
+            await cutter.convert_to_vertical(clip_path, vertical_path)
+
+        output_filename = f"short_{i + 1}_{_safe_filename(moment.title)}.mp4"
+        final_path = job_output_dir / output_filename
+
+        clip_segments = [s for s in segments if s.end > moment.start - 0.1 and s.start < moment.end + 0.1]
+
+        clip_music = add_music
+        if add_music == "auto" and moment.mood:
+            clip_music = moment.mood
+
+        await renderer.render_captions(
+            video_path=vertical_path,
+            segments=clip_segments,
+            output_path=final_path,
+            style=caption_style,
+            video_start=moment.start,
+            add_music=clip_music,
+            hook_text=moment.hook,
+            footage_layout=footage_layout,
+            caption_position=caption_position,
+            add_watermark=add_watermark,
+        )
+
+        clip_path.unlink(missing_ok=True)
+        vertical_path.unlink(missing_ok=True)
+
+        completed_count[0] += 1
+        pct = 55 + int((completed_count[0] / total_moments) * 40)
+        update_job_state(
+            job_id,
+            "rendering",
+            pct,
+            f"Готово {completed_count[0]}/{total_moments} шортсов",
+            steps=_build_steps(
+                "render", f"{completed_count[0]}/{total_moments}", done_steps + ["cut", "reframe"], steps
+            ),
+        )
+
+        file_size = final_path.stat().st_size if final_path.exists() else 0
+
+        from services.storage import storage
+
+        storage_key = f"processed/{job_id}/{output_filename}"
+        video_url = (
+            storage.upload(final_path, storage_key) if storage.enabled else f"/storage/{job_id}/{output_filename}"
+        )
+
+        return {
+            "index": i + 1,
+            "title": moment.title,
+            "description": moment.description,
+            "score": moment.score,
+            "start": moment.start,
+            "end": moment.end,
+            "duration": round(moment.end - moment.start, 1),
+            "filename": output_filename,
+            "url": video_url,
+            "file_size": file_size,
+        }
+
+    update_job_state(
+        job_id,
+        "cutting",
+        55,
+        f"Обработка {total_moments} клипов параллельно...",
+        steps=_build_steps("cut", f"0/{total_moments}", done_steps, steps),
+    )
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def limited_process(i, moment):
+        async with semaphore:
+            return await process_clip(i, moment)
+
+    results = await asyncio.gather(*[limited_process(i, m) for i, m in enumerate(moments)])
+    shorts = list(results)
+    shorts.sort(key=lambda x: x["index"])
+
+    done_steps.extend(["cut", "reframe", "render"])
+
+    skip_download = options.get("skip_download", False)
+    if not skip_download and settings.delete_source_after_processing:
+        if video_path.exists():
+            video_path.unlink(missing_ok=True)
+            logger.info(f"[{job_id}] Source video deleted: {video_path}")
+
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        for ext in ["mp4", "mkv", "webm", "avi"]:
+            cache_file = settings.downloads_path / f"{url_hash}.{ext}"
+            if cache_file.exists():
+                cache_file.unlink(missing_ok=True)
+                logger.info(f"[{job_id}] Cache file deleted: {cache_file}")
+                break
+
+    # === Публикация (если запрошена) ===
+    publish_targets = options.get("publish_targets") or []
+    if publish_targets:
+        username = options.get("username", "")
+        update_job_state(
+            job_id,
+            "publishing",
+            95,
+            "Публикация шортсов...",
+            steps=_build_steps("publish", "Загрузка...", done_steps, steps),
+            shorts=shorts,
+        )
+
+        from services.publisher import TikTokPublisher, YouTubePublisher
+        from services.token_encryption import decrypt_tokens
+
+        publishers = {}
+        for target in publish_targets:
+            raw = _redis.get(f"oauth:{username}:{target}")
+            if not raw:
+                logger.warning(f"[{job_id}] Нет токена для {target}, пропуск")
+                continue
+            token_data = decrypt_tokens(raw.decode())
+            if target == "youtube":
+                publishers["youtube"] = (YouTubePublisher(), token_data)
+            elif target == "tiktok":
+                publishers["tiktok"] = (TikTokPublisher(), token_data)
+
+        for i, short in enumerate(shorts):
+            final_path = job_output_dir / short["filename"]
+            published = {}
+            for target, (pub, tokens) in publishers.items():
+                try:
+                    pub_url = await pub.upload(
+                        tokens,
+                        final_path,
+                        title=short["title"],
+                        description=short.get("description", ""),
+                    )
+                    published[target] = pub_url
+                    logger.info(f"[{job_id}] Опубликован {target}: {pub_url}")
+                except Exception as pub_err:
+                    logger.error(f"[{job_id}] Ошибка публикации {target}: {pub_err}")
+                    published[target] = f"error: {pub_err}"
+
+            shorts[i]["published"] = published
+
+        done_steps.append("publish")
+
+    return shorts
 
 
 def _safe_filename(text: str) -> str:
