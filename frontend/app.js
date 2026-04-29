@@ -6,6 +6,8 @@ let startTime = null;
 let authMode = "login";
 let currentBatchId = null;
 let batchPollingInterval = null;
+let currentOutputMode = "shorts";
+let postsRendered = false;
 
 // === Auth ===
 
@@ -323,6 +325,7 @@ async function startBatchProcessing(urls) {
         footage_category: document.getElementById("footage-category").value || null,
         caption_position: document.getElementById("caption-position").value,
         add_watermark: document.getElementById("add-watermark").checked,
+        output_mode: collectSettings().output_mode,
         publish_targets: getPublishTargets(),
         min_duration: 15,
         max_duration: 60,
@@ -394,6 +397,13 @@ function showBatchResults(jobs) {
   document.getElementById("batch-progress-section").style.display = "none";
   document.getElementById("results-section").style.display = "block";
 
+  const videoTab = document.querySelector('.tab-btn[data-tab="video"]');
+  const postsTab = document.querySelector('.tab-btn[data-tab="posts"]');
+  const hasPosts = jobs.some(job => job.posts && job.posts.length > 0);
+  if (videoTab) videoTab.classList.remove("hidden");
+  if (postsTab) postsTab.classList.toggle("hidden", !hasPosts);
+  switchResultTab(hasPosts ? "posts" : "video");
+
   const allShorts = [];
   const errors = [];
   jobs.forEach(job => {
@@ -458,6 +468,7 @@ async function startProcessing() {
   const btn = document.getElementById("submit-btn");
   btn.disabled = true;
   startTime = Date.now();
+  postsRendered = false;
 
   document.getElementById("input-section").style.display = "none";
   document.getElementById("progress-section").style.display = "block";
@@ -474,6 +485,8 @@ async function startProcessing() {
     { id: "publish", label: "Публикация", status: "pending" },
   ]);
 
+  currentOutputMode = document.querySelector('input[name="output-mode"]:checked')?.value || "shorts";
+
   try {
     const response = await fetch(`${API_BASE}/jobs`, {
       method: "POST",
@@ -489,6 +502,7 @@ async function startProcessing() {
         footage_category: document.getElementById("footage-category").value || null,
         caption_position: document.getElementById("caption-position").value,
         add_watermark: document.getElementById("add-watermark").checked,
+        output_mode: currentOutputMode,
         srt_timecodes: srtTimecodes,
         publish_targets: getPublishTargets(),
         min_duration: 15,
@@ -516,7 +530,18 @@ function startPolling(jobId) {
       if (!res.ok) return;
       const job = await res.json();
       updateProgress(job);
-      if (job.status === "done") { clearInterval(pollingInterval); showResults(job.shorts); }
+      if (job.posts && job.posts.length > 0 && !postsRendered) {
+        postsRendered = true;
+        showResults(job);
+        if (job.status !== "done") {
+          const badge = document.getElementById("posts-badge");
+          if (badge) {
+            badge.textContent = job.posts.length;
+            badge.style.display = "inline-flex";
+          }
+        }
+      }
+      if (job.status === "done") { clearInterval(pollingInterval); showResults(job); }
       else if (job.status === "error") { clearInterval(pollingInterval); showError(job.error || "Неизвестная ошибка"); }
     } catch (e) { console.error("Poll error:", e); }
   }, 1500);
@@ -596,56 +621,171 @@ function getStepIcon(status) {
 
 // === Results ===
 
-function showResults(shorts) {
+function showResults(data) {
   document.getElementById("progress-section").style.display = "none";
   document.getElementById("results-section").style.display = "block";
 
+  const shorts = data.shorts || [];
+  const posts = data.posts || [];
+  const mode = data.output_mode || currentOutputMode;
   const elapsed = Math.round((Date.now() - startTime) / 1000);
-  document.getElementById("results-title").textContent =
-    `${shorts.length} шортс${shorts.length > 1 ? (shorts.length < 5 ? 'а' : 'ов') : ''} за ${formatElapsed(elapsed)}`;
 
-  const grid = document.getElementById("shorts-grid");
-  grid.innerHTML = "";
+  const videoTab = document.querySelector('.tab-btn[data-tab="video"]');
+  const postsTab = document.querySelector('.tab-btn[data-tab="posts"]');
 
-  shorts.forEach((short) => {
-    const size = formatSize(short.file_size);
-    const dur = formatDuration(short.duration);
-    const videoUrl = `${API_BASE.replace('/api', '')}${short.url}`;
+  if (mode === "shorts") {
+    if (videoTab) videoTab.classList.remove("hidden");
+    if (postsTab) postsTab.classList.add("hidden");
+    switchResultTab("video");
+    document.getElementById("results-title").textContent =
+      `${shorts.length} шортс${shorts.length > 1 ? (shorts.length < 5 ? 'а' : 'ов') : ''} за ${formatElapsed(elapsed)}`;
+  } else if (mode === "posts") {
+    if (videoTab) videoTab.classList.add("hidden");
+    if (postsTab) postsTab.classList.remove("hidden");
+    switchResultTab("posts");
+    document.getElementById("results-title").textContent =
+      `${posts.length} пост${posts.length > 1 ? (posts.length < 5 ? 'а' : 'ов') : ''} за ${formatElapsed(elapsed)}`;
+  } else {
+    if (videoTab) videoTab.classList.remove("hidden");
+    if (postsTab) postsTab.classList.remove("hidden");
+    if (posts.length > 0 && shorts.length === 0) {
+      switchResultTab("posts");
+    } else {
+      switchResultTab("video");
+    }
+    const parts = [];
+    if (shorts.length > 0) {
+      parts.push(`${shorts.length} шортс${shorts.length > 1 ? (shorts.length < 5 ? 'а' : 'ов') : ''}`);
+    }
+    if (posts.length > 0) {
+      parts.push(`${posts.length} пост${posts.length > 1 ? (posts.length < 5 ? 'а' : 'ов') : ''}`);
+    }
+    document.getElementById("results-title").textContent =
+      parts.join(" · ") + ` за ${formatElapsed(elapsed)}`;
+  }
 
-    const card = document.createElement("div");
-    card.className = "short-card";
-    card.innerHTML = `
-      <div class="short-video-wrap">
-        <video class="short-video" src="${videoUrl}" controls preload="metadata"></video>
-        <span class="short-score">${short.score}/10</span>
-      </div>
-      <div class="short-info">
-        <div class="short-title">${escapeHtml(short.title)}</div>
-        <div class="short-desc">${escapeHtml(short.description)}</div>
-        <div class="short-meta">
-          <span>${dur}</span>
-          <span>${size}</span>
+  if (shorts.length > 0) {
+    const grid = document.getElementById("shorts-grid");
+    grid.innerHTML = "";
+    shorts.forEach((short) => {
+      const size = formatSize(short.file_size);
+      const dur = formatDuration(short.duration);
+      const videoUrl = `${API_BASE.replace('/api', '')}${short.url}`;
+
+      const card = document.createElement("div");
+      card.className = "short-card";
+      card.innerHTML = `
+        <div class="short-video-wrap">
+          <video class="short-video" src="${videoUrl}" controls preload="metadata"></video>
+          <span class="short-score">${short.score}/10</span>
         </div>
-        <a href="${videoUrl}" class="short-download" download>Скачать MP4</a>
-      </div>`;
-    grid.appendChild(card);
-  });
+        <div class="short-info">
+          <div class="short-title">${escapeHtml(short.title)}</div>
+          <div class="short-desc">${escapeHtml(short.description)}</div>
+          <div class="short-meta">
+            <span>${dur}</span>
+            <span>${size}</span>
+          </div>
+          <a href="${videoUrl}" class="short-download" download>Скачать MP4</a>
+        </div>`;
+      grid.appendChild(card);
+    });
+  }
+
+  if (posts.length > 0) {
+    _renderPosts(posts);
+  }
 
   const wrap = document.getElementById("results-section");
-  // Remove old buttons
   wrap.querySelectorAll(".results-actions").forEach(e => e.remove());
 
   const actions = document.createElement("div");
   actions.className = "results-actions";
   actions.style.cssText = "display:flex;gap:12px;margin-top:1.5rem;flex-wrap:wrap;";
-  actions.innerHTML = `
-    <button class="btn-primary" onclick="downloadZip('${currentJobId}')">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Скачать все ZIP
-    </button>
-    <button class="btn-secondary" onclick="resetUI()">Новое видео</button>
-  `;
+
+  let buttons = "";
+  if (shorts.length > 0) {
+    buttons += `
+      <button class="btn-primary" onclick="downloadZip('${currentJobId}')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Скачать все ZIP
+      </button>`;
+  }
+  if (posts.length > 0) {
+    buttons += `
+      <button class="btn-primary" onclick="downloadPostsTxt('${currentJobId}')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Скачать посты TXT
+      </button>`;
+  }
+  buttons += `<button class="btn-secondary" onclick="resetUI()">Новое видео</button>`;
+  actions.innerHTML = buttons;
   wrap.appendChild(actions);
+}
+
+function _renderPosts(posts) {
+  const grid = document.getElementById("posts-grid");
+  grid.innerHTML = "";
+  posts.forEach((post, i) => {
+    const card = document.createElement("div");
+    card.className = "post-card";
+    card.style.animationDelay = `${i * 0.05}s`;
+    const typeLabel = {
+      meaningful: "Осмысленный",
+      trigger: "Триггер",
+      bite: "Байт",
+    }[post.type] || post.type;
+    card.innerHTML = `
+      <div class="post-type">${escapeHtml(typeLabel)}</div>
+      <div class="post-content">${escapeHtml(post.content)}</div>
+      <div class="post-meta">
+        <span class="post-platform">${escapeHtml(post.platform || "text")}</span>
+        <span class="post-chars">${post.char_count || post.content.length} симв.</span>
+      </div>
+      <div class="post-actions">
+        <button class="btn-sm" onclick="copyPostText(${i})">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Копировать
+        </button>
+      </div>`;
+    grid.appendChild(card);
+  });
+  window._lastPosts = posts;
+}
+
+function copyPostText(index) {
+  const posts = window._lastPosts;
+  if (!posts || !posts[index]) return;
+  navigator.clipboard.writeText(posts[index].content).then(() => {
+    const btn = document.querySelectorAll(".post-actions .btn-sm")[index];
+    if (btn) {
+      const original = btn.innerHTML;
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> Скопировано`;
+      setTimeout(() => { btn.innerHTML = original; }, 1500);
+    }
+  });
+}
+
+async function downloadPostsTxt(jobId) {
+  try {
+    const res = await fetch(`${API_BASE}/jobs/${jobId}/posts-txt`, { headers: authHeaders() });
+    if (!res.ok) throw new Error("Ошибка скачивания");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `posts-${jobId.slice(0, 8)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+}
+
+function switchResultTab(tab) {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.tab === tab);
+  });
+  document.getElementById("tab-video").style.display = tab === "video" ? "block" : "none";
+  document.getElementById("tab-posts").style.display = tab === "posts" ? "block" : "none";
 }
 
 function showError(message) {
@@ -659,6 +799,8 @@ function resetUI() {
   currentJobId = null;
   currentBatchId = null;
   startTime = null;
+  postsRendered = false;
+  window._lastPosts = null;
   if (pollingInterval) clearInterval(pollingInterval);
   if (batchPollingInterval) clearInterval(batchPollingInterval);
   document.getElementById("input-section").style.display = "block";
@@ -668,6 +810,14 @@ function resetUI() {
   document.getElementById("error-section").style.display = "none";
   document.getElementById("steps-list").innerHTML = "";
   document.getElementById("batch-jobs-list").innerHTML = "";
+  document.getElementById("shorts-grid").innerHTML = "";
+  document.getElementById("posts-grid").innerHTML = "";
+  document.querySelectorAll(".tab-btn").forEach((btn) => btn.classList.remove("hidden", "active"));
+  document.querySelector('.tab-btn[data-tab="video"]').classList.add("active");
+  document.getElementById("tab-video").style.display = "block";
+  document.getElementById("tab-posts").style.display = "none";
+  document.getElementById("video-badge").style.display = "none";
+  document.getElementById("posts-badge").style.display = "none";
   document.getElementById("submit-btn").disabled = false;
 }
 
@@ -714,6 +864,16 @@ function escapeHtml(text) {
 
 // === Presets ===
 
+function updateModeUI() {
+  const panel = document.getElementById("settings-panel");
+  const mode = document.querySelector('input[name="output-mode"]:checked')?.value;
+  if (mode === "posts") {
+    panel.classList.add("posts-mode");
+  } else {
+    panel.classList.remove("posts-mode");
+  }
+}
+
 function collectSettings() {
   return {
     language: document.getElementById("language").value,
@@ -725,6 +885,7 @@ function collectSettings() {
     footage_category: document.getElementById("footage-category").value || null,
     caption_position: document.getElementById("caption-position").value,
     add_watermark: document.getElementById("add-watermark").checked,
+    output_mode: document.querySelector('input[name="output-mode"]:checked')?.value || "shorts",
   };
 }
 
@@ -738,6 +899,11 @@ function applySettings(s) {
   document.getElementById("footage-category").value = s.footage_category || "";
   document.getElementById("caption-position").value = s.caption_position || "auto";
   document.getElementById("add-watermark").checked = s.add_watermark !== false;
+  if (s.output_mode) {
+    const radio = document.querySelector(`input[name="output-mode"][value="${s.output_mode}"]`);
+    if (radio) radio.checked = true;
+  }
+  updateModeUI();
 }
 
 async function loadPresets() {
@@ -822,6 +988,9 @@ document.addEventListener("DOMContentLoaded", () => {
   checkAuth();
   setupPreview();
   loadFootageCategories();
+  document.querySelectorAll('input[name="output-mode"]').forEach(r => {
+    r.addEventListener("change", updateModeUI);
+  });
   const urlInput = document.getElementById("url-input");
   urlInput.addEventListener("input", autoResizeInput);
   urlInput.addEventListener("paste", () => setTimeout(autoResizeInput, 50));

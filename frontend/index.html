@@ -99,7 +99,7 @@
                 <option value="en">English</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Шортсов (макс.)</label>
               <select id="max-shorts">
                 <option value="1">1</option>
@@ -112,7 +112,7 @@
                 <option value="50">50</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Субтитры</label>
               <select id="caption-style">
                 <option value="karaoke">Караоке</option>
@@ -123,14 +123,14 @@
                 <option value="minimal">Минимальные</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Кадрирование</label>
               <select id="reframe-mode">
                 <option value="ai">AI-трекинг</option>
                 <option value="center">Центр</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Музыка</label>
               <select id="add-music">
                 <option value="auto">Авто (AI)</option>
@@ -140,7 +140,7 @@
                 <option value="none">Без музыки</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Футаж-макет</label>
               <select id="footage-layout">
                 <option value="none">Без футажа</option>
@@ -149,22 +149,39 @@
                 <option value="footage_bottom">Снизу (50/50)</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Категория футажа</label>
               <select id="footage-category">
                 <option value="">Любая</option>
               </select>
             </div>
-            <div class="setting-item">
+            <div class="setting-item video-only">
               <label>Позиция субтитров</label>
               <select id="caption-position">
                 <option value="auto">Авто (внутри стримера)</option>
                 <option value="fixed_bottom">Всегда снизу</option>
               </select>
             </div>
+            <div class="setting-item">
+              <label>Режим вывода</label>
+              <div class="mode-selector">
+                <label class="mode-option">
+                  <input type="radio" name="output-mode" value="shorts" id="mode-short" checked />
+                  <span>Только видео</span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="output-mode" value="posts" id="mode-post" />
+                  <span>Только посты</span>
+                </label>
+                <label class="mode-option">
+                  <input type="radio" name="output-mode" value="both" id="mode-both" />
+                  <span>Видео + Посты</span>
+                </label>
+              </div>
+            </div>
           </div>
            <div class="settings-checks">
-            <label class="check-label">
+            <label class="check-label video-only">
               <input type="checkbox" id="add-watermark" checked />
               <span class="checkmark"></span>
               <span>Водяной знак (rumble.com)</span>
@@ -246,7 +263,22 @@
     <!-- Results -->
     <section id="results-section" style="display:none">
       <h2 class="results-heading" id="results-title"></h2>
-      <div class="shorts-grid" id="shorts-grid"></div>
+      <div class="result-tabs" id="result-tabs">
+        <button class="tab-btn active" data-tab="video" onclick="switchResultTab('video')">
+          Видео
+          <span class="tab-badge" id="video-badge" style="display:none"></span>
+        </button>
+        <button class="tab-btn" data-tab="posts" onclick="switchResultTab('posts')">
+          Посты
+          <span class="tab-badge" id="posts-badge" style="display:none"></span>
+        </button>
+      </div>
+      <div class="tab-content" id="tab-video" style="display:block">
+        <div class="shorts-grid" id="shorts-grid"></div>
+      </div>
+      <div class="tab-content" id="tab-posts" style="display:none">
+        <div class="posts-grid" id="posts-grid"></div>
+      </div>
     </section>
 
     <!-- Error -->
