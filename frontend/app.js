@@ -329,6 +329,7 @@ async function startBatchProcessing(urls) {
         publish_targets: getPublishTargets(),
         min_duration: 15,
         max_duration: 60,
+        post_footer: document.getElementById("post-footer").value || null,
       }),
     });
     if (!response.ok) {
@@ -507,6 +508,7 @@ async function startProcessing() {
         publish_targets: getPublishTargets(),
         min_duration: 15,
         max_duration: 60,
+        post_footer: document.getElementById("post-footer").value || null,
       }),
     });
     if (!response.ok) {
@@ -872,6 +874,10 @@ function updateModeUI() {
   } else {
     panel.classList.remove("posts-mode");
   }
+  const footerItem = document.getElementById("post-footer-item");
+  if (footerItem) {
+    footerItem.style.display = mode === "shorts" ? "none" : "";
+  }
 }
 
 function collectSettings() {
@@ -886,6 +892,7 @@ function collectSettings() {
     caption_position: document.getElementById("caption-position").value,
     add_watermark: document.getElementById("add-watermark").checked,
     output_mode: document.querySelector('input[name="output-mode"]:checked')?.value || "shorts",
+    post_footer: document.getElementById("post-footer").value || null,
   };
 }
 
@@ -899,6 +906,7 @@ function applySettings(s) {
   document.getElementById("footage-category").value = s.footage_category || "";
   document.getElementById("caption-position").value = s.caption_position || "auto";
   document.getElementById("add-watermark").checked = s.add_watermark !== false;
+  document.getElementById("post-footer").value = s.post_footer || "";
   if (s.output_mode) {
     const radio = document.querySelector(`input[name="output-mode"][value="${s.output_mode}"]`);
     if (radio) radio.checked = true;

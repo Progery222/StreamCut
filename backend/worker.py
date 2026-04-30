@@ -417,8 +417,8 @@ async def _pipeline_posts(job_id: str, url: str, options: dict):
                 video_path = Path(provided_video_path)
                 update_job_state(
                     job_id,
-                    "downloading",
-                    20,
+                    "transcribing",
+                    15,
                     "Используем готовый файл",
                     steps=_build_steps("download", "Готовый файл ✓", done_steps, steps),
                 )
@@ -431,17 +431,17 @@ async def _pipeline_posts(job_id: str, url: str, options: dict):
                     mapped = 2 + int(percent * 0.18)
                     update_job_state(
                         job_id,
-                        "downloading",
+                        "transcribing",
                         mapped,
-                        f"Скачивание видео... {percent}%",
+                        f"Подготовка видео для транскрипции... {percent}%",
                         steps=_build_steps("download", f"{percent}%", done_steps, steps),
                     )
 
                 update_job_state(
                     job_id,
-                    "downloading",
+                    "transcribing",
                     2,
-                    "Скачивание видео...",
+                    "Подготовка видео для транскрипции...",
                     steps=_build_steps("download", "Подготовка...", done_steps, steps),
                 )
                 logger.info(f"[{job_id}] Скачивание: {url}")
@@ -509,9 +509,9 @@ async def _pipeline_posts(job_id: str, url: str, options: dict):
             # Subtitles succeeded — no download needed, mark as done
             update_job_state(
                 job_id,
-                "downloading",
-                20,
-                "Скачивание не требуется",
+                "transcribing",
+                25,
+                "Субтитры извлечены, скачивание не требуется",
                 steps=_build_steps("download", "Субтитры доступны ✓", done_steps, steps),
             )
             done_steps.append("download")
@@ -539,7 +539,8 @@ async def _pipeline_posts(job_id: str, url: str, options: dict):
             steps=_build_steps("generate_posts", "GPT-4o-mini пишет...", done_steps, steps),
         )
         logger.info(f"[{job_id}] Генерация постов...")
-        posts = await post_generator.generate_posts(segments, moments=None)
+        post_footer = options.get("post_footer")
+        posts = await post_generator.generate_posts(segments, moments=None, post_footer=post_footer)
         done_steps.append("generate_posts")
 
         update_job_state(
@@ -548,7 +549,7 @@ async def _pipeline_posts(job_id: str, url: str, options: dict):
             100,
             f"Готово! Создано {len(posts)} постов",
             steps=_build_steps("done", None, done_steps, steps),
-            posts=posts,
+            posts=[p.model_dump() for p in posts],
         )
         logger.info(f"[{job_id}] Готово! {len(posts)} постов")
 
@@ -589,7 +590,7 @@ async def _pipeline_both(job_id: str, url: str, options: dict):
             video_path = Path(provided_video_path)
             update_job_state(
                 job_id,
-                "downloading",
+                "transcribing",
                 20,
                 "Используем готовый файл",
                 steps=_build_steps("download", "Готовый файл ✓", done_steps, steps),
@@ -774,7 +775,8 @@ async def _pipeline_both(job_id: str, url: str, options: dict):
                 steps=_build_steps("generate_posts", "GPT-4o-mini пишет...", done_steps, steps),
             )
             logger.info(f"[{job_id}] Генерация постов...")
-            posts = await post_generator.generate_posts(segments, moments)
+            post_footer = options.get("post_footer")
+            posts = await post_generator.generate_posts(segments, moments, post_footer=post_footer)
             _write_posts_to_state(job_id, posts)
             done_steps.append("generate_posts")
             return posts
@@ -791,7 +793,7 @@ async def _pipeline_both(job_id: str, url: str, options: dict):
             f"Готово! Создано {len(shorts)} шортсов и {len(posts)} постов",
             steps=_build_steps("done", None, done_steps, steps),
             shorts=shorts,
-            posts=posts,
+            posts=[p.model_dump() for p in posts],
         )
         logger.info(f"[{job_id}] Готово! {len(shorts)} шортсов и {len(posts)} постов")
 

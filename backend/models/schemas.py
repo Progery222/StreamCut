@@ -36,6 +36,7 @@ class CreateJobRequest(BaseModel):
     srt_timecodes: list[dict] | None = None  # [{start, end, title?}]
     publish_targets: list[str] | None = None
     output_mode: OutputMode = "shorts"
+    post_footer: str | None = None
 
 
 class CreateBatchRequest(BaseModel):
@@ -53,6 +54,7 @@ class CreateBatchRequest(BaseModel):
     add_watermark: bool = True
     publish_targets: list[str] | None = None
     output_mode: OutputMode = "shorts"
+    post_footer: str | None = None
 
 
 class BatchResponse(BaseModel):

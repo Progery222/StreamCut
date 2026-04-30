@@ -99,6 +99,7 @@ async def create_job(request: CreateJobRequest, username: str = Depends(get_curr
                 "srt_timecodes": request.srt_timecodes,
                 "publish_targets": request.publish_targets,
                 "output_mode": request.output_mode,
+                "post_footer": request.post_footer,
                 "username": username,
             },
         ],
@@ -137,6 +138,7 @@ async def create_batch(request: CreateBatchRequest, username: str = Depends(get_
         "add_watermark": request.add_watermark,
         "publish_targets": request.publish_targets,
         "output_mode": request.output_mode,
+        "post_footer": request.post_footer,
         "username": username,
     }
 
